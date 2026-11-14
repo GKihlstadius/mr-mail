@@ -2,7 +2,8 @@
 // Kör först `pnpm build`, starta GreenMail (se README) och sedan: node scripts/screenshots.mjs
 import { _electron as electron } from 'playwright-core';
 import { createRequire } from 'node:module';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import nodemailer from 'nodemailer';
@@ -80,11 +81,48 @@ smtp.close();
 
 const data = mkdtempSync(join(tmpdir(), 'mr-mail-shots-'));
 const app = await electron.launch({ executablePath: electronPath, args: [root], cwd: root, env: { ...process.env, MRMAIL_DATA: data } });
-const shot = async (page, name) => {
+const frames = join(root, 'release', 'demo-frames');
+rmSync(frames, { recursive: true, force: true });
+mkdirSync(frames, { recursive: true });
+let frameNo = 0;
+// Bildrutor till den animerade demon i README, se scripts/demo-gif.py.
+const frame = async (page, caption) => {
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: join(frames, `${String(++frameNo).padStart(2, '0')}.png`) });
+  writeFileSync(join(frames, `${String(frameNo).padStart(2, '0')}.txt`), caption);
+};
+const shot = async (page, name, caption) => {
   await page.waitForTimeout(500);
   await page.screenshot({ path: join(out, name) });
   console.log(`docs/screenshots/${name}`);
+  if (caption) await frame(page, caption);
 };
+function mcpClient(dataDir) {
+  const proc = spawn(process.execPath, [join(root, 'dist/mcp/mr-mail-mcp.cjs')], { env: { ...process.env, MRMAIL_DATA: dataDir, MRMAIL_APP: join(dataDir, 'no-app.exe') } });
+  const pending = new Map();
+  let next = 1;
+  let buf = '';
+  proc.stdout.on('data', (c) => {
+    buf += c;
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const msg = JSON.parse(buf.slice(0, i));
+      buf = buf.slice(i + 1);
+      pending.get(msg.id)?.(msg);
+    }
+  });
+  const rpc = (method, params) =>
+    new Promise((res) => {
+      const id = next++;
+      pending.set(id, res);
+      proc.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+    });
+  const tool = async (name, args = {}) => {
+    const r = await rpc('tools/call', { name, arguments: args });
+    return r.result?.content?.[0]?.text ?? '';
+  };
+  return { rpc, tool, close: () => proc.kill() };
+}
 try {
   let win = await app.firstWindow();
   await win.waitForSelector('.sidebar');
@@ -115,24 +153,42 @@ try {
   await win.click('.inbox-tab[data-tab="all"]').catch(() => undefined);
   await win.click('.row:has-text("Demo next week?")');
   await win.waitForSelector('.text-body');
-  await shot(win, 'inbox.png');
+  await shot(win, 'inbox.png', 'Clean, fast, local first');
 
   await win.click('.inbox-tab[data-tab="personal"]').catch(() => undefined);
   await win.click('.row:has-text("Slides for Friday")');
   await win.waitForSelector('.attachment');
-  await shot(win, 'smart-inbox.png');
+  await shot(win, 'smart-inbox.png', 'Smart inbox: people first, noise sorted away');
 
   await app.evaluate(({ nativeTheme }) => (nativeTheme.themeSource = 'dark'));
   await win.emulateMedia({ colorScheme: 'dark' });
   await win.click('.inbox-tab[data-tab="all"]').catch(() => undefined);
   await win.click('.row:has-text("Demo next week?")');
-  await shot(win, 'dark.png');
+  await shot(win, 'dark.png', 'Light and dark, follows Windows');
   await app.evaluate(({ nativeTheme }) => (nativeTheme.themeSource = 'light'));
   await win.emulateMedia({ colorScheme: 'light' });
 
   await win.click('.nav-item:has-text("Clean Up")');
   await win.waitForTimeout(2500);
-  await shot(win, 'clean-up.png');
+  await shot(win, 'clean-up.png', 'Clean Up: unsubscribe and archive by sender');
+
+  // Ett AI-verktyg skriver ett utkast via MCP, och utkastet öppnas i appen.
+  await win.click('.nav-item:has-text("Inbox")').catch(() => undefined);
+  const mcp = mcpClient(data);
+  try {
+    await mcp.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'screenshots', version: '1' } });
+    const hits = JSON.parse(await mcp.tool('search_emails', { query: 'Demo next week' }));
+    const before = app.windows().length;
+    await mcp.tool('draft_email', { reply_to: hits[0].id, text: 'Hi Karin,\n\nGreat to hear from you. Tuesday at 2 pm works well, I will send an invite with a video link.\n\nBest,\nAlex' });
+    for (let i = 0; i < 40 && app.windows().length <= before; i++) await new Promise((r) => setTimeout(r, 200));
+    const cw = app.windows()[app.windows().length - 1];
+    await cw.waitForSelector('.editor');
+    await cw.setViewportSize({ width: 900, height: 700 }).catch(() => undefined);
+    await shot(cw, 'agent-draft.png', 'Your AI agent drafts, you review and send');
+    await cw.close();
+  } finally {
+    mcp.close();
+  }
 } finally {
   await app.close();
   rmSync(data, { recursive: true, force: true });
