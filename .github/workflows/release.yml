@@ -1,0 +1,33 @@
+name: Release
+
+# Builds the installer and attaches it to a GitHub release when a tag like v0.6.0 is pushed.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/MrMail-Setup-*.exe --title "Mr Mail ${GITHUB_REF_NAME#v}" --generate-notes || \
+          gh release upload "$GITHUB_REF_NAME" release/MrMail-Setup-*.exe --clobber

@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/GKihlstadius/mr-mail/releases/latest"><img alt="Download" src="https://img.shields.io/github/v/release/GKihlstadius/mr-mail?label=download&color=2f6fde"></a>
+  <a href="https://github.com/GKihlstadius/mr-mail/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/GKihlstadius/mr-mail/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-22%20tools-8a5cf6">
