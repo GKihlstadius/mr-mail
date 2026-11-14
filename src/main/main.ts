@@ -51,7 +51,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const isDev = !!process.env.VITE_DEV_URL;
 
 if (process.env.MRMAIL_DATA) app.setPath('userData', process.env.MRMAIL_DATA);
-app.setAppUserModelId('io.github.gkihlstadius.mrmail');
+// Ett eget id för oinstallerade körningar (utveckling, tester), annars tar Windows aktivitetsfält Electrons ikon.
+app.setAppUserModelId(app.isPackaged ? 'io.github.gkihlstadius.mrmail' : 'io.github.gkihlstadius.mrmail.dev');
 app.setName(APP_NAME);
 if (!process.env.MRMAIL_DATA) app.setPath('userData', join(app.getPath('appData'), dataDirName((n) => existsSync(join(app.getPath('appData'), n)))));
 
