@@ -11,8 +11,8 @@
     },
     "installer": {
         "script": [
-            "Expand-7zipArchive \"$dir\`$PLUGINSDIR\app-64.7z\" \"$dir\"",
-            "Remove-Item \"$dir\`$PLUGINSDIR\", \"$dir\Uninstall*\" -Recurse -Force -ErrorAction SilentlyContinue"
+            "Expand-7zipArchive \"$dir\\`$PLUGINSDIR\\app-64.7z\" \"$dir\"",
+            "Remove-Item \"$dir\\`$PLUGINSDIR\", \"$dir\\`$R0\" -Recurse -Force -ErrorAction SilentlyContinue"
         ]
     },
     "shortcuts": [
