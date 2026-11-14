@@ -1,0 +1,60 @@
+{
+  "name": "mr-mail",
+  "productName": "Mr Mail",
+  "version": "0.6.0",
+  "description": "A fast, private email client for Windows that your AI agents can drive.",
+  "author": "GKihlstadius",
+  "license": "MIT",
+  "homepage": "https://github.com/GKihlstadius/mr-mail",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GKihlstadius/mr-mail.git"
+  },
+  "bugs": {
+    "url": "https://github.com/GKihlstadius/mr-mail/issues"
+  },
+  "type": "module",
+  "main": "dist/main/main.js",
+  "devDependencies": {
+    "@types/jsdom": "^30.0.0",
+    "@types/mailparser": "^3.9.0",
+    "@types/node": "^26.6.6",
+    "@types/nodemailer": "^8.0.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/smtp-server": "^3.5.13",
+    "@vitejs/plugin-react": "^6.3.0",
+    "dompurify": "^3.4.17",
+    "electron": "^45.3.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "imapflow": "^2.11.0",
+    "jsdom": "^31.0.0",
+    "mailparser": "^3.14.3",
+    "nodemailer": "^10.5.0",
+    "playwright-core": "^1.65.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "smtp-server": "^3.21.4",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild",
+      "electron-winstaller"
+    ]
+  },
+  "scripts": {
+    "build:main": "node scripts/build-main.mjs",
+    "build:renderer": "vite build",
+    "build": "pnpm build:main && pnpm build:renderer",
+    "start": "pnpm build && electron .",
+    "typecheck": "tsc -p tsconfig.json && node scripts/check-i18n.mjs",
+    "test": "vitest run",
+    "test:e2e": "node scripts/e2e.mjs",
+    "dist": "pnpm build && electron-builder --win nsis --config electron-builder.config.cjs"
+  }
+}

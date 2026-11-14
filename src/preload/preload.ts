@@ -1,0 +1,83 @@
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
+
+async function call(channel: string, ...args: unknown[]) {
+  const res = await ipcRenderer.invoke(channel, ...args);
+  if (!res.ok) throw new Error(res.error);
+  return res.value;
+}
+
+const api = {
+  lang: ipcRenderer.sendSync('ui-lang') as string,
+  state: () => call('state'),
+  list: (sel: unknown, limit?: number) => call('list', sel, limit),
+  thread: (id: string) => call('thread', id),
+  loadOlder: (sel: unknown) => call('load-older', sel),
+  searchServer: (q: unknown) => call('search-server', q),
+  open: (id: string) => call('open', id),
+  flag: (id: string, flag: string, value: boolean) => call('flag', id, flag, value),
+  move: (id: string, role: string) => call('move', id, role),
+  moveTo: (id: string, accountId: string, path: string) => call('move-to', id, accountId, path),
+  moveMany: (ids: string[], target: { role?: string; path?: string }) => call('move-many', ids, target),
+  undoMove: (undoId?: string) => call('undo-move', undoId),
+  updateCheck: () => call('update-check'),
+  updateInstall: () => call('update-install'),
+  saveAttachment: (id: string, index: number) => call('attachment-save', id, index),
+  openAttachment: (id: string, index: number) => call('attachment-open', id, index),
+  external: (url: string) => call('external', url),
+  compose: (init: unknown) => call('compose', init),
+  composeInit: () => call('compose-init', ipcRenderer.sendSync('web-contents-id')),
+  send: (msg: unknown, at?: number) => call('send', msg, at),
+  outbox: () => call('outbox'),
+  outboxSendNow: (id: string) => call('outbox-send-now', id),
+  outboxEdit: (id: string) => call('outbox-edit', id),
+  saveDraft: (msg: unknown) => call('save-draft', msg),
+  pickFiles: () => call('pick-files'),
+  ai: (req: unknown) => call('ai', req),
+  remind: (id: string, kind: string, due: number) => call('remind', id, kind, due),
+  remindClear: (id: string) => call('remind-clear', id),
+  setBadge: (dataUrl: string | null, count: number) => call('badge', dataUrl, count),
+  print: (html: string, pdf: boolean, name: string) => call('print', html, pdf, name),
+  aiTask: (sourceId: string, task: string, engine?: string) => call('ai-task', sourceId, task, engine),
+  openaiStatus: () => call('openai-status'),
+  openaiKeySave: (key: string) => call('openai-key-save', key),
+  openaiModels: () => call('openai-models'),
+  codexStatus: (fresh?: boolean) => call('codex-status', fresh),
+  agentInfo: () => call('agent-info'),
+  cleanSenders: (accountId?: string) => call('clean-senders', accountId),
+  prefetch: (ids: string[]) => call('prefetch', ids),
+  cleanScan: () => call('clean-scan'),
+  cleanUnsubscribe: (address: string, accountId?: string) => call('clean-unsubscribe', address, accountId),
+  cleanBulk: (address: string, action: string, olderThanDays?: number, accountId?: string) => call('clean-bulk', address, action, olderThanDays, accountId),
+  cleanRule: (address: string, action: string | null) => call('clean-rule', address, action),
+  cleanKeep: (address: string, keep: boolean) => call('clean-keep', address, keep),
+  saveAccount: (input: unknown) => call('account-save', input),
+  testAccount: (input: unknown) => call('account-test', input),
+  setupAccount: (input: unknown) => call('account-setup', input),
+  deleteAccount: (id: string) => call('account-delete', id),
+  hasPassword: (id: string) => call('account-has-password', id),
+  setAccountSignature: (accountId: string, signatureId: string) => call('account-signature', accountId, signatureId),
+  sparkFind: () => call('spark-find'),
+  sparkPick: () => call('spark-pick'),
+  oauthLogin: (input: unknown) => call('oauth-login', input),
+  oauthCancel: () => call('oauth-cancel'),
+  oauthConfig: () => call('oauth-config'),
+  oauthConfigSave: (cfg: unknown) => call('oauth-config-save', cfg),
+  reconnect: (id?: string) => call('reconnect', id),
+  syncFolder: (accountId: string, path: string) => call('sync-folder', accountId, path),
+  saveSettings: (patch: unknown) => call('settings-save', patch),
+  contacts: (query: string) => call('contacts', query),
+  fileInfo: (paths: string[]) => call('file-info', paths),
+  fileFromData: (name: string, data: Uint8Array) => call('file-from-data', name, data),
+  pathForFile: (file: File) => webUtils.getPathForFile(file),
+  discardDraft: (msg: unknown) => call('discard-draft', msg),
+  closeWindow: () => ipcRenderer.send('close-window'),
+  on: (channel: 'changed' | 'open-message' | 'theme' | 'before-close' | 'setup-progress' | 'clean-progress' | 'outbox' | 'update', fn: (...args: any[]) => void) => {
+    const listener = (_e: unknown, ...args: any[]) => fn(...args);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
+  }
+};
+
+contextBridge.exposeInMainWorld('api', api);
+
+export type Api = typeof api;
