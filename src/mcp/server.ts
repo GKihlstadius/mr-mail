@@ -6,11 +6,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { AGENT_TOOLS, TOOL_ALIASES, type AgentArgs } from '../shared/agentTools';
-import { APP_FILE_NAME, APP_NAME, dataDirName } from '../shared/brand';
+import { APP_FILE_NAME, APP_NAME, dataDirName, DB_FILE } from '../shared/brand';
 import { handleMcp, type McpSession } from '../shared/mcpRpc';
 
 const appData = process.env.APPDATA || join(process.env.USERPROFILE || '', 'AppData', 'Roaming');
-const dataDir = process.env.MRMAIL_DATA || join(appData, dataDirName((n) => existsSync(join(appData, n))));
+const dataDir = process.env.MRMAIL_DATA || join(appData, dataDirName((n) => existsSync(join(appData, n, DB_FILE))));
 const endpointFile = join(dataDir, 'mcp.json');
 
 interface Endpoint {

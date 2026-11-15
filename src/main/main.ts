@@ -59,7 +59,7 @@ import { startAgentServer } from './agentServer';
 import { newHttpToken, startAgentHttp } from './agentHttp';
 import { guardAgent, type AskRequest } from './agentGuard';
 import { McpClientError, clientStatus, connectClient, disconnectClient, envFromProcess, type McpEnv } from './mcpClients';
-import { APP_FILE_NAME, APP_NAME, APP_VERSION, GITHUB_REPO, dataDirName } from '../shared/brand';
+import { APP_FILE_NAME, APP_NAME, APP_VERSION, GITHUB_REPO, dataDirName, DB_FILE } from '../shared/brand';
 import { getLang, resolveLang, setLang, t } from '../shared/i18n';
 import { migrateSignatures, parseSparkExport, resolveSignature, type SparkSignature } from '../shared/signatures';
 
@@ -70,7 +70,7 @@ if (process.env.MRMAIL_DATA) app.setPath('userData', process.env.MRMAIL_DATA);
 // Ett eget id för oinstallerade körningar (utveckling, tester), annars tar Windows aktivitetsfält Electrons ikon.
 app.setAppUserModelId(app.isPackaged ? 'io.github.gkihlstadius.mrmail' : 'io.github.gkihlstadius.mrmail.dev');
 app.setName(APP_NAME);
-if (!process.env.MRMAIL_DATA) app.setPath('userData', join(app.getPath('appData'), dataDirName((n) => existsSync(join(app.getPath('appData'), n)))));
+if (!process.env.MRMAIL_DATA) app.setPath('userData', join(app.getPath('appData'), dataDirName((n) => existsSync(join(app.getPath('appData'), n, DB_FILE)))));
 
 if (!process.env.MRMAIL_DATA && !app.requestSingleInstanceLock()) {
   app.quit();
@@ -2347,7 +2347,7 @@ app.on('second-instance', () => showMain());
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   mkdirSync(app.getPath('userData'), { recursive: true });
-  store = new Store(join(app.getPath('userData'), 'brevlada.db'));
+  store = new Store(join(app.getPath('userData'), DB_FILE));
   if (!store.listAccounts().length && !process.env.MRMAIL_NO_SEED) {
     for (const a of defaultAccounts(process.env.MRMAIL_SEED)) store.saveAccount(a);
   }

@@ -21,7 +21,9 @@ export const OLD_DATA_DIR_NAME = 'Brevlåda';
 // GitHub-repot, för uppdateringar: "ägare/namn".
 export const GITHUB_REPO: string = (repository?.url ?? '').replace(/^.*github\.com\//, '').replace(/\.git$/, '');
 
-// Mappen för appens data: den gamla om den finns, annars den nya.
-export function dataDirName(exists: (name: string) => boolean): string {
-  return exists(OLD_DATA_DIR_NAME) && !exists(DATA_DIR_NAME) ? OLD_DATA_DIR_NAME : DATA_DIR_NAME;
+// Mappen för appens data: den gamla om databasen finns där men inte i den nya. Frågar efter
+// databasfilen, inte mappen, eftersom Electron kan skapa en tom mapp med det nya namnet.
+export const DB_FILE = 'brevlada.db';
+export function dataDirName(hasDb: (dir: string) => boolean): string {
+  return hasDb(OLD_DATA_DIR_NAME) && !hasDb(DATA_DIR_NAME) ? OLD_DATA_DIR_NAME : DATA_DIR_NAME;
 }

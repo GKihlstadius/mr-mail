@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1
+
+- Fixed: when upgrading from Brevlåda, an empty "Mr Mail" data folder could make the app start without your accounts. The app now picks the folder that actually has a database.
+
 ## 0.7.0
 
 - **Calendar:** Google Calendar, Outlook (Microsoft Graph) and iCloud, Fastmail or any CalDAV server. Agenda view, create and edit events, invite people, find free time. Outlook asks for calendar access only when you connect the calendar.
