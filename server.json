@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.GKihlstadius/mr-mail",
+  "title": "Mr Mail",
+  "description": "Local Windows email client with 28 tools: read, draft, send on request, calendar and clean up.",
+  "version": "0.7.1",
+  "websiteUrl": "https://github.com/GKihlstadius/mr-mail",
+  "repository": {
+    "url": "https://github.com/GKihlstadius/mr-mail",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/GKihlstadius/mr-mail/releases/download/v0.7.1/MrMail-0.7.1.mcpb",
+      "version": "0.7.1",
+      "fileSha256": "273408a809978161427a6dbd4c11aaa2037d3eb3048da93578248a690cac12ae",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
