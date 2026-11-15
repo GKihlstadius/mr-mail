@@ -11,7 +11,7 @@
 <a href="https://github.com/GKihlstadius/mr-mail/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/GKihlstadius/mr-mail/ci.yml?branch=main&style=flat-square&label=CI"></a>
 <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2ea043?style=flat-square"></a>
 <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?style=flat-square">
-<a href="docs/mcp.md"><img alt="MCP" src="https://img.shields.io/badge/MCP-22%20tools-8a5cf6?style=flat-square"></a>
+<a href="docs/mcp.md"><img alt="MCP" src="https://img.shields.io/badge/MCP-28%20tools-8a5cf6?style=flat-square"></a>
 <img alt="English and Swedish" src="https://img.shields.io/badge/lang-EN%20%7C%20SV-555?style=flat-square">
 
 ### A fast, private email client for Windows that Claude Code, Zed and any MCP agent can drive.
@@ -39,7 +39,7 @@ No account, no cloud sync, no tracking. Mr Mail talks IMAP and SMTP straight to 
 <td width="33%" valign="top">
 
 ### Built for AI agents
-A built in MCP server with 22 tools. Your agent can search, read, summarize, draft, attach files, read Word and Excel attachments, schedule and clean up. It never sends unless you ask.
+A built in MCP server with 28 tools. Your agent can search, read, summarize, draft, attach files, read Word and Excel attachments, schedule, clean up, answer invitations and read and book your calendar. It never sends unless you ask.
 
 </td>
 <td width="33%" valign="top">
@@ -55,16 +55,20 @@ IMAP IDLE for instant mail, a local SQLite cache and a list that stays smooth wi
 
 <img src="docs/screenshots/agent.png" alt="Claude Code drafts a reply that opens in Mr Mail" width="100%">
 
-Install Mr Mail, then connect your agent with one line.
+Install Mr Mail, open **Settings, Control with AI tools** and click **Connect** next to your agent. Mr Mail adds itself to the agent's config and keeps your other settings and comments intact.
 
-**Claude Code**
+**One click for:** Claude Desktop, Claude Code, Cursor, VS Code (Copilot), Windsurf, Zed, Gemini CLI, LM Studio and Codex CLI. Claude Desktop users can also double click `MrMail-x.y.z.mcpb` from the [latest release](https://github.com/GKihlstadius/mr-mail/releases/latest).
+
+<details>
+<summary><b>Manual setup</b> (Claude Code, Zed, any MCP client)</summary>
+
+Claude Code:
 
 ```
 claude mcp add mr-mail --scope user -e ELECTRON_RUN_AS_NODE=1 -- "%LOCALAPPDATA%\Programs\mr-mail\MrMail.exe" "%LOCALAPPDATA%\Programs\mr-mail\resources\mr-mail-mcp.cjs"
 ```
 
-<details>
-<summary><b>Zed</b> (settings.json)</summary>
+Zed (`settings.json`):
 
 ```json
 "context_servers": {
@@ -77,12 +81,9 @@ claude mcp add mr-mail --scope user -e ELECTRON_RUN_AS_NODE=1 -- "%LOCALAPPDATA%
 }
 ```
 
-</details>
+Any stdio client: run `MrMail.exe` with `ELECTRON_RUN_AS_NODE=1` and the path to `resources\mr-mail-mcp.cjs` as its only argument.
 
-<details>
-<summary><b>Any other MCP client</b></summary>
-
-Run `MrMail.exe` with the environment variable `ELECTRON_RUN_AS_NODE=1` and the path to `resources\mr-mail-mcp.cjs` as its only argument. It speaks MCP over stdio. **Settings, Control with AI tools** in the app shows the exact lines for your computer.
+Clients that only take a URL: turn on **Accept connections over HTTP** in Settings and use `http://127.0.0.1:7337/mcp` with the bearer token shown there (MCP Streamable HTTP, localhost only).
 
 </details>
 
@@ -90,14 +91,19 @@ Then just ask:
 
 > *"Summarize what came in today and draft a reply to Karin saying Tuesday at 2 works."*<br>
 > *"Save the attachment from Sam to Downloads, then reply to all with the edited image attached."*<br>
-> *"Unsubscribe me from every newsletter I have not opened in three months."*
+> *"Unsubscribe me from every newsletter I have not opened in three months."*<br>
+> *"Find a free hour with Jonas next week and send him an invite."*
 
-**Safe by design.** Agents never send unless you explicitly asked; otherwise they save a draft that opens in the app for you to review. They never delete unless asked. New tools show up in your agent automatically after an app update. Full tool list: [docs/mcp.md](docs/mcp.md).
+**Safe by design.** Agents never send unless you explicitly asked; otherwise they save a draft that opens in the app for you to review. You choose per action whether sending, deleting and unsubscribing is allowed, asks you first (the default) or is never allowed, and an activity log shows every call an agent made. New tools show up in your agent automatically after an app update. Full tool list: [docs/mcp.md](docs/mcp.md).
 
 ## Features
 
 | | |
 |---|---|
+| **Ask Mr Mail** | A chat panel (Ctrl+J) that searches, reads, drafts and books for you with the same tools and permissions as your agents. Works with ChatGPT, a local model or your own server. |
+| **Calendar** | Google Calendar, Outlook and iCloud or any CalDAV server. A calm agenda view, create and edit events, find free time, answer invitations with Yes, Maybe or No right in the email. |
+| **Contacts** | Everyone you email, with history, upcoming meetings and one click to write or invite. |
+| **Command palette** | Ctrl+K to jump anywhere, open recent emails, write to a contact or run any action. Ctrl+/ lists every shortcut. |
 | **Smart inbox** | Tabs for Personal, Newsletters and Notifications. People you have written to always land in Personal. |
 | **Clean Up** | See who sends you the most, unsubscribe in one click (RFC 8058), archive or delete everything from a sender, set rules for the future. |
 | **Undo everything** | Undo send, undo archive and delete (Ctrl+Z), multi select with Ctrl and Shift. |
@@ -122,13 +128,18 @@ Then just ask:
 | Open source | ✓ | ✓ | | |
 | Mail goes only between you and your provider | ✓ | ✓ | | |
 | Built in MCP server for AI agents | ✓ | | | |
+| One click setup for Claude, Cursor, VS Code and more | ✓ | | | |
 | Smart inbox that puts people first | ✓ | | ✓ | ✓ |
 
 New Outlook syncs non Microsoft accounts through Microsoft's cloud, and Spark stores account access on its own servers to deliver push and team features.
 
 ## Install
 
-1. Download `MrMail-Setup-x.y.z.exe` from the [latest release](https://github.com/GKihlstadius/mr-mail/releases/latest).
+1. Download `MrMail-Setup-x.y.z.exe` from the [latest release](https://github.com/GKihlstadius/mr-mail/releases/latest), or use Scoop:
+   ```
+   scoop bucket add mr-mail https://github.com/GKihlstadius/mr-mail
+   scoop install mr-mail/mr-mail
+   ```
 2. Run it. The installer is not code signed yet, so Windows SmartScreen may say it *protected your PC*: click **More info**, then **Run anyway**.
 3. Add your account. Mr Mail finds the server settings for most providers automatically.
 
@@ -153,7 +164,7 @@ Only what it asks for through the MCP tools, while the app is running on your co
 <details>
 <summary><b>Can an agent send email without asking me?</b></summary>
 
-The agent is told to send only when you explicitly ask. If it is unsure, it saves a draft that opens in the app, and you press Send yourself.
+No. By default Mr Mail asks you in a dialog before anything is sent, deleted or unsubscribed, whichever agent asked. You can change that per action under **Settings, Control with AI tools**, and see every call in the activity log there. Agents are also told to save drafts unless you explicitly ask them to send.
 
 </details>
 
@@ -190,15 +201,18 @@ docker run -d --name mr-mail-greenmail --cpus 1 -p 3025:3025 -p 3143:3143 -e GRE
 pnpm build && pnpm test:e2e
 ```
 
-**Stack:** Electron, React, TypeScript, imapflow, nodemailer, mailparser, node:sqlite, DOMPurify. No UI framework, about 13 000 lines. See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+**Stack:** Electron, React, TypeScript, imapflow, nodemailer, mailparser, node:sqlite, DOMPurify. No UI framework, about 21 000 lines. See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
 ## Roadmap
 
 - [x] MCP server with drafts, attachments, scheduling and clean up
 - [x] English and Swedish
 - [x] Auto update from GitHub Releases
+- [x] Calendar: Google, Outlook, iCloud and CalDAV, invitations in the reader
+- [x] One click setup for AI clients, MCP over HTTP, Claude Desktop extension
+- [x] Chat in the app, contacts, command palette
 - [ ] Code signed installer
-- [ ] Calendar invites (ICS) in the reader
+- [ ] winget (submitted)
 - [ ] More languages (translations are one file per language, see [CONTRIBUTING.md](CONTRIBUTING.md))
 - [ ] macOS build
 

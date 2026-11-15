@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { queryDates } from '../shared/search';
 import type { OutboxItem, Reminder, ReminderKind } from '../shared/types';
 import { categorize, type ListHeaders, type SenderStat } from '../shared/cleanup';
-import type { AccountConfig, Address, Contact, Folder, FolderRole, MessageBody, MessageSummary, Settings, SearchQuery } from '../shared/types';
+import type { CalendarEvent, CalendarInfo } from '../shared/calendar';
+import type { AccountConfig, Address, AgentLogEntry, Contact, ContactDetail, ContactRow, Folder, FolderRole, MessageBody, MessageSummary, Settings, SearchQuery } from '../shared/types';
 
 export const DEFAULT_SETTINGS: Settings = {
   theme: 'system',
@@ -29,6 +30,10 @@ export const DEFAULT_SETTINGS: Settings = {
   signatures: [],
   sparkOffered: false,
   agentTools: true,
+  agentHttp: false,
+  agentHttpPort: 7337,
+  agentHttpToken: '',
+  agentPermissions: { send: 'ask', delete: 'ask', unsubscribe: 'ask' },
   cleanRules: [],
   cleanKeep: [],
   unsubscribed: {},
@@ -114,6 +119,23 @@ export class Store {
     this.db.exec(`CREATE TABLE IF NOT EXISTS outbox (
       id TEXT PRIMARY KEY, due INTEGER NOT NULL, kind TEXT NOT NULL, created INTEGER NOT NULL, msg TEXT NOT NULL
     )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS agent_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, tool TEXT NOT NULL, summary TEXT NOT NULL,
+      ok INTEGER NOT NULL, error TEXT NOT NULL DEFAULT '', client TEXT NOT NULL DEFAULT ''
+    )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS invite_answers (
+      account_id TEXT NOT NULL, uid TEXT NOT NULL, response TEXT NOT NULL, sequence INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL,
+      PRIMARY KEY (account_id, uid)
+    )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS cal_calendars (
+      account_id TEXT NOT NULL, id TEXT NOT NULL, position INTEGER NOT NULL, data TEXT NOT NULL,
+      PRIMARY KEY (account_id, id)
+    )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS cal_events (
+      id TEXT PRIMARY KEY, account_id TEXT NOT NULL, calendar_id TEXT NOT NULL,
+      start INTEGER NOT NULL, end INTEGER NOT NULL, data TEXT NOT NULL
+    )`);
+    this.db.exec('CREATE INDEX IF NOT EXISTS cal_events_time ON cal_events (start, end)');
     const hasContacts = !!this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'contacts'").get();
     if (!hasContacts) {
       this.db.exec(`CREATE TABLE contacts (
@@ -157,6 +179,63 @@ export class Store {
     return rows.filter((r) => !skip.has(r.address)).slice(0, limit);
   }
 
+  // Kontakter: alla personer användaren mejlat med, flest mejl först. Söker i namn och adress.
+  contactList(query: string, exclude: string[] = [], limit = 300): ContactRow[] {
+    const q = query.trim().toLowerCase();
+    const like = `%${q.replace(/[\\%_]/g, (c) => '\\' + c)}%`;
+    const skip = exclude.map((e) => e.toLowerCase());
+    const rows = this.db
+      .prepare(
+        `SELECT address, name, count, last FROM contacts
+         WHERE (? = '' OR address LIKE ? ESCAPE '\\' OR lower(name) LIKE ? ESCAPE '\\')
+         ORDER BY count DESC, last DESC LIMIT ?`
+      )
+      .all(q, like, like, limit + skip.length) as unknown as ContactRow[];
+    const own = new Set(skip);
+    return rows.filter((r) => !own.has(r.address)).slice(0, limit);
+  }
+
+  // En kontakt: antal mejl åt båda hållen och de senaste mejlen, ett mejl en gång även om det finns i flera mappar.
+  contactDetail(address: string, limit = 25): Omit<ContactDetail, 'events'> {
+    const addr = address.toLowerCase().trim();
+    const like = `%"${addr.replace(/[\\%_"]/g, (c) => '\\' + c)}"%`;
+    const contact = this.db.prepare('SELECT name, last FROM contacts WHERE address = ?').get(addr) as { name: string; last: number } | undefined;
+    const key = "CASE WHEN m.message_id <> '' THEN m.message_id ELSE m.id END";
+    const received = (
+      this.db
+        .prepare(
+          `SELECT COUNT(DISTINCT m.account_id || ${key}) AS c FROM messages m JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder
+           WHERE m.from_addr = ? COLLATE NOCASE AND f.role NOT IN ('sent', 'drafts', 'trash', 'junk')`
+        )
+        .get(addr) as { c: number }
+    ).c;
+    const sent = (
+      this.db
+        .prepare(
+          `SELECT COUNT(DISTINCT m.account_id || ${key}) AS c FROM messages m JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder
+           WHERE f.role = 'sent' AND lower(m.recipients) LIKE ? ESCAPE '\\'`
+        )
+        .get(like) as { c: number }
+    ).c;
+    const rows = this.db
+      .prepare(
+        `SELECT m.* FROM messages m JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder
+         WHERE (m.from_addr = ? COLLATE NOCASE OR lower(m.recipients) LIKE ? ESCAPE '\\') AND f.role NOT IN ('drafts', 'trash', 'junk')
+         ORDER BY m.date DESC LIMIT ?`
+      )
+      .all(addr, like, limit * 3) as any[];
+    const seen = new Set<string>();
+    const recent: MessageSummary[] = [];
+    for (const r of rows) {
+      const k = `${r.account_id}|${r.message_id || r.id}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      recent.push(this.rowToSummary(r));
+      if (recent.length >= limit) break;
+    }
+    return { address: addr, name: contact?.name ?? '', received, sent, last: contact?.last ?? recent[0]?.date ?? 0, recent };
+  }
+
   close() {
     this.db.close();
   }
@@ -182,6 +261,8 @@ export class Store {
     this.db.prepare('DELETE FROM bodies WHERE id IN (SELECT id FROM messages WHERE account_id = ?)').run(id);
     this.db.prepare('DELETE FROM messages WHERE account_id = ?').run(id);
     this.db.prepare('DELETE FROM folders WHERE account_id = ?').run(id);
+    this.clearCalendarAccount(id);
+    this.db.prepare('DELETE FROM invite_answers WHERE account_id = ?').run(id);
   }
 
   getSecret(id: string): Uint8Array | null {
@@ -287,6 +368,8 @@ export class Store {
   }
 
   upsertMessage(m: StoredMessage) {
+    // Kontakterna räknas bara när mejlet är nytt i cachen, inte när det uppdateras.
+    const known = !!this.db.prepare('SELECT 1 FROM messages WHERE id = ?').get(m.id);
     this.db
       .prepare(
         `INSERT INTO messages (id, account_id, folder, uid, uid_validity, subject, from_name, from_addr, recipients, date, preview,
@@ -300,7 +383,7 @@ export class Store {
         JSON.stringify({ to: m.to, cc: m.cc }), m.date, m.preview,
         m.seen ? 1 : 0, m.flagged ? 1 : 0, m.answered ? 1 : 0, m.hasAttachments ? 1 : 0, m.messageId
       );
-    this.addContacts([m.from, ...m.to, ...m.cc], m.date);
+    if (!known) this.addContacts([m.from, ...m.to, ...m.cc], m.date);
   }
 
   private adjustFolderUnread(id: string, delta: number) {
@@ -791,6 +874,88 @@ export class Store {
       )
       .all(accountId, limit) as { text: string }[];
     return rows.map((r) => r.text);
+  }
+
+  // Aktivitetsloggen för AI-verktygen. Bara de senaste 500 anropen sparas.
+  addAgentLog(e: { tool: string; summary: string; ok: boolean; error?: string; client?: string; at?: number }) {
+    this.db
+      .prepare('INSERT INTO agent_log (at, tool, summary, ok, error, client) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(e.at ?? Date.now(), e.tool, e.summary, e.ok ? 1 : 0, e.error ?? '', e.client ?? '');
+    this.db.prepare('DELETE FROM agent_log WHERE id <= (SELECT id FROM agent_log ORDER BY id DESC LIMIT 1 OFFSET 500)').run();
+  }
+
+  listAgentLog(limit = 50): AgentLogEntry[] {
+    const rows = this.db.prepare('SELECT * FROM agent_log ORDER BY id DESC LIMIT ?').all(limit) as any[];
+    return rows.map((r) => ({ id: r.id, at: r.at, tool: r.tool, summary: r.summary, ok: !!r.ok, error: r.error, client: r.client }));
+  }
+
+  clearAgentLog() {
+    this.db.prepare('DELETE FROM agent_log').run();
+  }
+
+  // Kalendercachen: kalendrar och händelser för de närmaste veckorna.
+  setCalendars(accountId: string, cals: CalendarInfo[]) {
+    this.db.prepare('DELETE FROM cal_calendars WHERE account_id = ?').run(accountId);
+    const ins = this.db.prepare('INSERT INTO cal_calendars (account_id, id, position, data) VALUES (?, ?, ?, ?)');
+    cals.forEach((c, i) => ins.run(accountId, c.id, i, JSON.stringify(c)));
+    const ids = new Set(cals.map((c) => c.id));
+    for (const r of this.db.prepare('SELECT DISTINCT calendar_id AS c FROM cal_events WHERE account_id = ?').all(accountId) as { c: string }[]) {
+      if (!ids.has(r.c)) this.db.prepare('DELETE FROM cal_events WHERE account_id = ? AND calendar_id = ?').run(accountId, r.c);
+    }
+  }
+
+  listCalendars(): CalendarInfo[] {
+    return (this.db.prepare('SELECT data FROM cal_calendars ORDER BY account_id, position').all() as { data: string }[]).map((r) => JSON.parse(r.data));
+  }
+
+  replaceCalendarEvents(accountId: string, calendarId: string, from: number, to: number, events: CalendarEvent[]) {
+    this.db.exec('BEGIN');
+    try {
+      this.db.prepare('DELETE FROM cal_events WHERE account_id = ? AND calendar_id = ? AND end > ? AND start < ?').run(accountId, calendarId, from, to);
+      for (const e of events) this.putEvent(e);
+      this.db.exec('COMMIT');
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  putEvent(e: CalendarEvent) {
+    this.db
+      .prepare('INSERT INTO cal_events (id, account_id, calendar_id, start, end, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET account_id = excluded.account_id, calendar_id = excluded.calendar_id, start = excluded.start, end = excluded.end, data = excluded.data')
+      .run(e.id, e.accountId, e.calendarId, e.start, e.end, JSON.stringify(e));
+  }
+
+  removeEvent(id: string) {
+    this.db.prepare('DELETE FROM cal_events WHERE id = ?').run(id);
+  }
+
+  getEvent(id: string): CalendarEvent | null {
+    const r = this.db.prepare('SELECT data FROM cal_events WHERE id = ?').get(id) as { data: string } | undefined;
+    return r ? JSON.parse(r.data) : null;
+  }
+
+  cachedEvents(from: number, to: number): CalendarEvent[] {
+    return (this.db.prepare('SELECT data FROM cal_events WHERE end > ? AND start < ? OR (start = end AND start >= ? AND start < ?) ORDER BY start').all(from, to, from, to) as { data: string }[]).map((r) =>
+      JSON.parse(r.data)
+    );
+  }
+
+  clearCalendarAccount(accountId: string) {
+    this.db.prepare('DELETE FROM cal_events WHERE account_id = ?').run(accountId);
+    this.db.prepare('DELETE FROM cal_calendars WHERE account_id = ?').run(accountId);
+  }
+
+  // Svar på kalenderinbjudningar, per konto och händelse.
+  setInviteAnswer(accountId: string, uid: string, response: string, sequence: number) {
+    this.db
+      .prepare('INSERT INTO invite_answers (account_id, uid, response, sequence, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id, uid) DO UPDATE SET response = excluded.response, sequence = excluded.sequence, at = excluded.at')
+      .run(accountId, uid, response, sequence, Date.now());
+  }
+
+  inviteAnswer(accountId: string, uid: string): { response: string; sequence: number; at: number } | null {
+    const r = this.db.prepare('SELECT response, sequence, at FROM invite_answers WHERE account_id = ? AND uid = ?').get(accountId, uid) as any;
+    return r ? { response: r.response, sequence: r.sequence, at: r.at } : null;
   }
 
   getSettings(): Settings {

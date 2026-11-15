@@ -17,24 +17,47 @@ export interface OAuthClient {
 export interface OAuthEndpoints {
   auth: string;
   token: string;
+  // Behörigheter som användaren godkänner vid inloggningen.
   scope: string;
+  // Behörigheter som skickas när koden byts och när token förnyas. Saknas: inget skickas och
+  // leverantören ger alla godkända (Google). Microsoft kräver en resurs per token.
+  tokenScope?: string;
   // Google godtar 127.0.0.1 med valfri port, Microsoft kräver http://localhost för skrivbordsappar.
   host: '127.0.0.1' | 'localhost';
   extra?: Record<string, string>;
+}
+
+// Kalendern: Googles Calendar API och Microsoft Graph. Microsoft ger en token per resurs, därför
+// förnyas samma förnyelsenyckel en gång till med Graph-behörigheten.
+export const GOOGLE_CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly';
+export const MS_MAIL_SCOPE = 'https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access openid email profile';
+export const GRAPH_CALENDAR_SCOPE = 'https://graph.microsoft.com/Calendars.ReadWrite';
+export const GRAPH_TOKEN_SCOPE = `${GRAPH_CALENDAR_SCOPE} offline_access`;
+
+export function withCalendar(provider: OAuthProvider, ep: OAuthEndpoints): OAuthEndpoints {
+  return provider === 'microsoft' ? { ...ep, scope: `${ep.scope} ${GRAPH_CALENDAR_SCOPE}` } : ep;
+}
+
+export function hasGoogleCalendarScope(granted: string | undefined): boolean {
+  const set = new Set((granted ?? '').split(/\s+/));
+  return set.has('https://www.googleapis.com/auth/calendar.events') || set.has('https://www.googleapis.com/auth/calendar');
 }
 
 export const ENDPOINTS: Record<OAuthProvider, OAuthEndpoints> = {
   google: {
     auth: 'https://accounts.google.com/o/oauth2/v2/auth',
     token: 'https://oauth2.googleapis.com/token',
-    scope: 'https://mail.google.com/ openid email profile',
+    scope: `https://mail.google.com/ openid email profile ${GOOGLE_CALENDAR_SCOPE}`,
     host: '127.0.0.1',
     extra: { access_type: 'offline', prompt: 'consent' }
   },
   microsoft: {
     auth: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
     token: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
-    scope: 'https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access openid email profile',
+    // Kalendern (Graph) begärs bara när användaren ansluter den, se withCalendar. Organisationer som
+    // spärrar användarmedgivande ska inte kunna stoppa inloggningen för mejlen.
+    scope: MS_MAIL_SCOPE,
+    tokenScope: MS_MAIL_SCOPE,
     host: 'localhost',
     extra: { prompt: 'select_account' }
   }
@@ -46,6 +69,8 @@ export interface TokenSet {
   expiresAt: number;
   email?: string;
   name?: string;
+  // Behörigheterna som token gäller, när leverantören säger det.
+  scope?: string;
 }
 
 const b64url = (buf: Buffer) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -129,12 +154,16 @@ async function tokenRequest(ep: OAuthEndpoints, client: OAuthClient, body: Recor
     refreshToken: data.refresh_token,
     expiresAt: Date.now() + Number(data.expires_in ?? 3600) * 1000,
     email: emailFromIdToken(data.id_token),
-    name: nameFromIdToken(data.id_token)
+    name: nameFromIdToken(data.id_token),
+    scope: typeof data.scope === 'string' ? data.scope : undefined
   };
 }
 
-export function refreshAccessToken(ep: OAuthEndpoints, client: OAuthClient, refreshToken: string): Promise<TokenSet> {
-  return tokenRequest(ep, client, { grant_type: 'refresh_token', refresh_token: refreshToken, scope: ep.scope });
+export function refreshAccessToken(ep: OAuthEndpoints, client: OAuthClient, refreshToken: string, scope?: string): Promise<TokenSet> {
+  const body: Record<string, string> = { grant_type: 'refresh_token', refresh_token: refreshToken };
+  const sc = scope ?? ep.tokenScope;
+  if (sc) body.scope = sc;
+  return tokenRequest(ep, client, body);
 }
 
 const DONE_PAGE = (ok: boolean, text: string) =>
@@ -196,7 +225,9 @@ export async function authorize(
     if (r.error === 'access_denied') throw new OAuthError('access_denied', t('Du nekade åtkomst i webbläsaren.'));
     if (r.error === 'state') throw new OAuthError('state', t('Svaret från webbläsaren kunde inte verifieras. Försök igen.'));
     if (r.error || !r.code) throw new OAuthError(r.error ?? 'no_code', t('Inloggningen avbröts ({detail}).', { detail: r.error ?? t('ingen kod') }));
-    const tokens = await tokenRequest(ep, client, { grant_type: 'authorization_code', code: r.code, code_verifier: verifier, redirect_uri: redirectUri });
+    const body: Record<string, string> = { grant_type: 'authorization_code', code: r.code, code_verifier: verifier, redirect_uri: redirectUri };
+    if (ep.tokenScope) body.scope = ep.tokenScope;
+    const tokens = await tokenRequest(ep, client, body);
     if (!tokens.refreshToken) throw new OAuthError('no_refresh', t('Leverantören gav ingen förnyelsenyckel. Ta bort åtkomsten för {app} i kontot och logga in igen.', { app: APP_NAME }));
     return tokens;
   } finally {

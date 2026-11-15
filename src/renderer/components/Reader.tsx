@@ -9,6 +9,7 @@ import * as I from './Icons';
 import { MoveMenu } from './MoveMenu';
 import { ENGINE_LABEL } from './AiAssist';
 import { PopMenu, snoozeTimes, whenText, type PopSection } from './PopMenu';
+import { InviteCard } from './InviteCard';
 
 const sanitize = createSanitizer(window as any);
 
@@ -25,6 +26,7 @@ interface Props {
   onMove(id: string, path: string): void;
   onMailto(to: string): void;
   onError(msg: string): void;
+  onToast?(msg: string): void;
   children?: ReactNode;
   after?: ReactNode;
   reminders?: Reminder[];
@@ -61,6 +63,7 @@ function MessageView({
   showSubject,
   onMailto,
   onError,
+  onToast,
   onCollapse
 }: {
   message: FullMessage;
@@ -68,6 +71,7 @@ function MessageView({
   showSubject: boolean;
   onMailto(to: string): void;
   onError(msg: string): void;
+  onToast?(msg: string): void;
   onCollapse?(): void;
 }) {
   const [allowRemote, setAllowRemote] = useState(false);
@@ -75,7 +79,8 @@ function MessageView({
   const [frameHeight, setFrameHeight] = useState(200);
   const m = message;
   const isOwn = !!account && m.from.address === account.email.toLowerCase();
-  const visibleAttachments = m.body.attachments.filter((a) => !a.inline);
+  // Kalenderdelen utan filnamn visas som kortet, inte som bilaga.
+  const visibleAttachments = m.body.attachments.filter((a) => !a.inline && !(m.body.invite && a.contentType === 'text/calendar' && /^bilaga-\d+\.calendar$/.test(a.filename)));
 
   useEffect(() => {
     setAllowRemote(false);
@@ -147,6 +152,8 @@ function MessageView({
           )}
         </div>
       </div>
+
+      {m.body.invite && <InviteCard message={m} onError={onError} onToast={onToast} />}
 
       {visibleAttachments.length > 0 && (
         <div className="attachments">
@@ -258,6 +265,7 @@ export function Reader({
   onMove,
   onMailto,
   onError,
+  onToast,
   children,
   after,
   reminders = [],
@@ -315,7 +323,7 @@ export function Reader({
     <div className="msg-body-wrap">
       {loading && !message && <div className="body-loading">{t('Hämtar meddelandet…')}</div>}
       {error && <div className="body-error">{error}</div>}
-      {message && <MessageView message={message} account={account} showSubject={!inThread} onMailto={onMailto} onError={onError} />}
+      {message && <MessageView message={message} account={account} showSubject={!inThread} onMailto={onMailto} onError={onError} onToast={onToast} />}
     </div>
   );
 

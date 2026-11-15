@@ -43,6 +43,12 @@ const api = {
   openaiModels: () => call('openai-models'),
   codexStatus: (fresh?: boolean) => call('codex-status', fresh),
   agentInfo: () => call('agent-info'),
+  mcpClients: () => call('mcp-clients'),
+  agentHttpRotate: () => call('agent-http-rotate'),
+  agentLog: () => call('agent-log'),
+  agentLogClear: () => call('agent-log-clear'),
+  mcpClientConnect: (id: string) => call('mcp-client-connect', id),
+  mcpClientDisconnect: (id: string) => call('mcp-client-disconnect', id),
   cleanSenders: (accountId?: string) => call('clean-senders', accountId),
   prefetch: (ids: string[]) => call('prefetch', ids),
   cleanScan: () => call('clean-scan'),
@@ -70,8 +76,22 @@ const api = {
   fileFromData: (name: string, data: Uint8Array) => call('file-from-data', name, data),
   pathForFile: (file: File) => webUtils.getPathForFile(file),
   discardDraft: (msg: unknown) => call('discard-draft', msg),
+  inviteState: (id: string) => call('invite-state', id),
+  inviteRespond: (id: string, response: string, comment?: string) => call('invite-respond', id, response, comment),
+  inviteAdd: (id: string) => call('invite-add', id),
+  calendarState: () => call('calendar-state'),
+  calendarRefresh: (accountId?: string) => call('calendar-refresh', accountId),
+  calendarEvents: (from: number, to: number) => call('calendar-events', from, to),
+  calendarCreate: (input: unknown, calendarKey?: string) => call('calendar-create', input, calendarKey),
+  calendarDelete: (id: string) => call('calendar-delete', id),
+  calendarUpdate: (id: string, patch: unknown) => call('calendar-update', id, patch),
+  chatSend: (chatId: string, text: string) => call('chat-send', chatId, text),
+  chatCancel: (chatId: string) => call('chat-cancel', chatId),
+  chatReset: (chatId: string) => call('chat-reset', chatId),
+  contactList: (query: string, limit?: number) => call('contact-list', query, limit),
+  contactDetail: (address: string) => call('contact-detail', address),
   closeWindow: () => ipcRenderer.send('close-window'),
-  on: (channel: 'changed' | 'open-message' | 'theme' | 'before-close' | 'setup-progress' | 'clean-progress' | 'outbox' | 'update', fn: (...args: any[]) => void) => {
+  on: (channel: 'changed' | 'open-message' | 'theme' | 'before-close' | 'setup-progress' | 'clean-progress' | 'outbox' | 'update' | 'agent-log' | 'calendar' | 'chat-step', fn: (...args: any[]) => void) => {
     const listener = (_e: unknown, ...args: any[]) => fn(...args);
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);

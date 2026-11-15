@@ -9,3 +9,4 @@ import/
 
 # Skärmbilder från e2e-testerna (README använder docs/screenshots)
 /docs/*.png
+.claude/worktrees/

@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AGENT_INSTRUCTIONS, AGENT_TOOLS, type AgentArgs } from '../shared/agentTools';
+import { AGENT_INSTRUCTIONS, AGENT_TOOLS, type AgentCall } from '../shared/agentTools';
 import { APP_VERSION } from '../shared/brand';
 
 // Lokal brygga mellan MCP-servern (stdio) och appen. Lyssnar bara på 127.0.0.1, kräver en slumpad
@@ -17,7 +17,7 @@ export interface AgentEndpoint {
 
 export function startAgentServer(
   dataDir: string,
-  call: (tool: string, args: AgentArgs) => Promise<string>,
+  call: AgentCall,
   log: (msg: string) => void
 ): Promise<{ server: Server; stop: () => void }> {
   const token = randomBytes(24).toString('hex');
@@ -47,7 +47,8 @@ export function startAgentServer(
       try {
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         tool = String(body.tool ?? '');
-        const text = await call(tool, body.args ?? {});
+        const client = typeof body.client === 'string' && body.client.trim() ? body.client.trim().slice(0, 60) : undefined;
+        const text = await call(tool, body.args ?? {}, { client, via: 'stdio' });
         reply(200, { text });
       } catch (e: any) {
         log(`mcp ${tool}: ${e?.message ?? e}`);

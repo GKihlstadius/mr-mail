@@ -24,6 +24,8 @@ export interface SendInput {
   references?: string[];
   attachments: OutgoingPart[];
   headers?: Record<string, string>;
+  // Kalenderdel (iMIP): text/calendar med METHOD, plus samma fil som bilaga.
+  icalEvent?: { method: string; content: string; filename?: string };
 }
 
 // Lösenord, eller en OAuth-åtkomsttoken som skickas med XOAUTH2.
@@ -69,6 +71,7 @@ export async function buildRaw(
     inReplyTo: input.inReplyTo,
     references: input.references?.length ? input.references : undefined,
     attachments: input.attachments.map((a) => ({ filename: a.filename, content: a.content, path: a.path, contentType: a.contentType })),
+    icalEvent: input.icalEvent ? { method: input.icalEvent.method, content: input.icalEvent.content, filename: input.icalEvent.filename ?? 'invite.ics' } : undefined,
     headers: { 'X-Mailer': `${APP_FILE_NAME} ${APP_VERSION}`, ...(input.headers ?? {}) }
   });
   const node = mail.compile();

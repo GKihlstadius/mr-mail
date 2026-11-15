@@ -1,7 +1,7 @@
 {
   "name": "mr-mail",
   "productName": "Mr Mail",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "A fast, private email client for Windows that your AI agents can drive.",
   "author": "GKihlstadius",
   "license": "MIT",
@@ -30,6 +30,7 @@
     "esbuild": "^0.28.2",
     "imapflow": "^2.11.0",
     "jsdom": "^31.0.0",
+    "jsonc-parser": "^3.3.1",
     "mailparser": "^3.14.3",
     "nodemailer": "^10.5.0",
     "playwright-core": "^1.65.0",
@@ -55,6 +56,7 @@
     "typecheck": "tsc -p tsconfig.json && node scripts/check-i18n.mjs",
     "test": "vitest run",
     "test:e2e": "node scripts/e2e.mjs",
-    "dist": "pnpm build && electron-builder --win nsis --config electron-builder.config.cjs"
+    "mcpb": "node scripts/build-mcpb.mjs",
+    "dist": "pnpm build && node scripts/build-mcpb.mjs && electron-builder --win nsis --config electron-builder.config.cjs"
   }
 }

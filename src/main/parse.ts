@@ -1,5 +1,6 @@
 import { simpleParser, type AddressObject, type ParsedMail, type Attachment } from 'mailparser';
-import type { Address, AttachmentInfo, MessageBody } from '../shared/types';
+import type { Address, AttachmentInfo, Invitation, MessageBody } from '../shared/types';
+import { mainEvent, parseIcs } from '../shared/ics';
 
 export function flattenAddresses(input: AddressObject | AddressObject[] | undefined): Address[] {
   if (!input) return [];
@@ -87,6 +88,27 @@ function fallbackName(contentType: string, index: number): string {
   return `bilaga-${index + 1}.${ext}`;
 }
 
+export function isCalendarPart(contentType: string, filename?: string): boolean {
+  return /^(text\/calendar|application\/ics|text\/x-vcalendar)$/i.test(contentType) || /\.ics$/i.test(filename ?? '');
+}
+
+const MAX_ICS = 256 * 1024;
+
+// Inbjudan i mejlet: text/calendar-delen går före en bifogad .ics-fil.
+export function findInvitation(attachments: { contentType: string; filename?: string; content: Buffer }[]): Invitation | null {
+  const parts = attachments.filter((a) => isCalendarPart(a.contentType, a.filename));
+  parts.sort((a, b) => Number(!/calendar/i.test(a.contentType)) - Number(!/calendar/i.test(b.contentType)));
+  for (const a of parts) {
+    if (a.content.length > 2 * 1024 * 1024) continue;
+    const text = a.content.toString('utf8');
+    const cal = parseIcs(text);
+    const event = cal ? mainEvent(cal) : null;
+    if (!cal || !event) continue;
+    return { method: cal.method || 'PUBLISH', event, count: cal.events.length, ics: text.length <= MAX_ICS ? text : null };
+  }
+  return null;
+}
+
 export interface ParsedResult {
   parsed: ParsedMail;
   subject: string;
@@ -139,7 +161,8 @@ export async function parseMessage(source: Buffer | string): Promise<ParsedResul
       references,
       inReplyTo: parsed.inReplyTo ?? null,
       replyTo: flattenAddresses(parsed.replyTo),
-      hasRemoteImages: hasRemoteContent(html)
+      hasRemoteImages: hasRemoteContent(html),
+      invite: findInvitation(parsed.attachments ?? [])
     }
   };
 }

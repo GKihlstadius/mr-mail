@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, Notification, powerMonitor, safeStorage, shell, dialog, Menu, Tray, net } from 'electron';
+import { app, BrowserWindow, ipcMain, type WebContents, nativeImage, nativeTheme, Notification, powerMonitor, safeStorage, shell, dialog, Menu, Tray, net } from 'electron';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
@@ -15,6 +15,7 @@ import type {
   ComposeInit,
   FolderRole,
   FullMessage,
+  InviteResponse,
   MailboxSelection,
   MessageSummary,
   MessageBody,
@@ -29,20 +30,35 @@ import type {
   TestResult
 } from '../shared/types';
 import { defaultAccounts, getProvider, guessProvider, isValidEmail, makeAccount, slugify, validateAccount } from '../shared/accounts';
-import { buildDraft, removeDashes } from '../shared/compose';
+import { buildDraft, formatAddress, removeDashes } from '../shared/compose';
 import { buildMessages, buildTaskMessages, parseQuickReplies, taskCliPrompt, type ContextMail } from '../shared/prompts';
 import { Store } from './db';
 import { AccountSession, probeImap, testImap, type Credential } from './imap';
 import { defaultDeps, discover, findWorkingConfig, type Candidate } from './discover';
 import { buildRaw, sendRaw, testSmtp, type OutgoingPart, type SmtpSecret } from './smtp';
-import { parseMessage, extractAttachment } from './parse';
+import { parseMessage, extractAttachment, isCalendarPart } from './parse';
+import { inviteIdentity, inviteReplyMail, partstatToResponse } from './invite';
+import { buildEvent, partstatOf, withoutMethod } from '../shared/ics';
 import { runAi } from './ai';
-import { clearModelCache, codexStatus, listOpenAiModels, OPENAI_URL, pickLatestGpt } from './chatgpt';
-import { authorize, ENDPOINTS, OAuthError, providerFor, refreshAccessToken, type OAuthClient, type OAuthEndpoints, type OAuthProvider } from './oauth';
+import { clearModelCache, codexStatus, listOpenAiModels, OPENAI_URL, pickLatestGpt, resolveOpenAiModel } from './chatgpt';
+import { ChatAborted, chatSystemPrompt, compactHistory, openAiCompleter, runChatLoop, type ApiMessage, type ChatEndpoint } from './chat';
+import { chatSupported, findRefLinks, stepLabel, type ChatAnswer, type ChatRefs, type ChatStep } from '../shared/chat';
+import { AGENT_TOOLS } from '../shared/agentTools';
+import { authorize, withCalendar, ENDPOINTS, GRAPH_TOKEN_SCOPE, hasGoogleCalendarScope, OAuthError, providerFor, refreshAccessToken, type OAuthClient, type OAuthEndpoints, type OAuthProvider } from './oauth';
+import { CalendarService } from './calendar/service';
+import { CalendarAuthError, localZoneName, type CalendarProvider } from './calendar/provider';
+import { GoogleCalendar, GOOGLE_API } from './calendar/google';
+import { GraphCalendar, GRAPH_API } from './calendar/graph';
+import { CalDavCalendar, caldavStarts, discoverCalDav } from './calendar/caldav';
+import { resolveSrv } from 'node:dns/promises';
+import type { EventInput, EventPerson } from '../shared/calendar';
 import { isEmptyQuery, parseSearch } from '../shared/search';
 import { createAgent, type AgentHost } from './agent';
 import { categorize, findUnsubscribeLink, parseUnsubscribe, type CleanAction, type SenderStat } from '../shared/cleanup';
 import { startAgentServer } from './agentServer';
+import { newHttpToken, startAgentHttp } from './agentHttp';
+import { guardAgent, type AskRequest } from './agentGuard';
+import { McpClientError, clientStatus, connectClient, disconnectClient, envFromProcess, type McpEnv } from './mcpClients';
 import { APP_FILE_NAME, APP_NAME, APP_VERSION, GITHUB_REPO, dataDirName } from '../shared/brand';
 import { getLang, resolveLang, setLang, t } from '../shared/i18n';
 import { migrateSignatures, parseSparkExport, resolveSignature, type SparkSignature } from '../shared/signatures';
@@ -90,6 +106,9 @@ function decrypt(blob: Uint8Array | null): string | null {
 interface OAuthSecret {
   oauth: OAuthProvider;
   refreshToken: string;
+  // Godkända behörigheter vid inloggningen (Google), och om kalendern i Graph begärdes (Microsoft).
+  scope?: string;
+  graph?: boolean;
 }
 
 function readOAuthSecret(raw: string | null): OAuthSecret | null {
@@ -148,6 +167,105 @@ function credentialFor(cfg: AccountConfig): Credential | null {
   return raw;
 }
 
+// Åtkomsttoken för Microsoft Graph (kalendern): samma förnyelsenyckel, annan resurs.
+const graphTokens = new Map<string, { token: string; expiresAt: number }>();
+async function graphToken(accountId: string): Promise<string> {
+  const cached = graphTokens.get(accountId);
+  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
+  const secret = readOAuthSecret(decrypt(store.getSecret(accountId)));
+  if (!secret?.graph) throw new CalendarAuthError();
+  let tok;
+  try {
+    tok = await refreshAccessToken(endpointsFor('microsoft'), oauthClient('microsoft'), secret.refreshToken, GRAPH_TOKEN_SCOPE);
+  } catch (e: any) {
+    // Saknat medgivande eller utgången inloggning: användaren behöver logga in igen.
+    if (e instanceof OAuthError && /invalid_grant|consent|interaction_required|invalid_scope|65001/i.test(`${e.code} ${e.message}`)) throw new CalendarAuthError();
+    throw e;
+  }
+  graphTokens.set(accountId, { token: tok.accessToken, expiresAt: tok.expiresAt });
+  if (tok.refreshToken && tok.refreshToken !== secret.refreshToken) store.setSecret(accountId, encrypt(JSON.stringify({ ...secret, refreshToken: tok.refreshToken })));
+  return tok.accessToken;
+}
+
+// Tester kan peka om kalendrarnas API till en låtsad server på den egna datorn.
+function calendarApi(kind: 'google' | 'graph'): string {
+  const raw = process.env.MRMAIL_CALENDAR_TEST;
+  const over = raw ? JSON.parse(raw)[kind] : undefined;
+  return over || (kind === 'google' ? GOOGLE_API : GRAPH_API);
+}
+
+async function srvStarts(email: string): Promise<string[]> {
+  const domain = email.split('@')[1];
+  if (!domain || process.env.MRMAIL_NO_DNS) return [];
+  try {
+    const recs = await resolveSrv(`_caldavs._tcp.${domain}`);
+    return recs.sort((a, b) => a.priority - b.priority).map((r) => `https://${r.name}${r.port === 443 ? '' : `:${r.port}`}/.well-known/caldav`);
+  } catch {
+    return [];
+  }
+}
+
+// Kalendern för ett konto: Google och Microsoft via OAuth, övriga via CalDAV med kontots lösenord.
+async function calendarProvider(cfg: AccountConfig): Promise<CalendarProvider | null> {
+  const raw = decrypt(store.getSecret(cfg.id));
+  if (!raw) return null;
+  if (cfg.auth === 'oauth') {
+    const secret = readOAuthSecret(raw);
+    if (!secret) return null;
+    if (secret.oauth === 'google') {
+      if (!hasGoogleCalendarScope(secret.scope)) throw new CalendarAuthError();
+      return new GoogleCalendar(cfg.id, () => accessToken(cfg.id), fetch, calendarApi('google'));
+    }
+    if (!secret.graph) throw new CalendarAuthError();
+    return new GraphCalendar(cfg.id, () => graphToken(cfg.id), fetch, calendarApi('graph'), localZoneName());
+  }
+  // Gmail och Outlook med lösenord har ingen CalDAV med lösenord, där krävs inloggning med OAuth.
+  if ((cfg.provider === 'gmail' || cfg.provider === 'outlook') && !cfg.caldavUrl) return null;
+  const starts = caldavStarts(cfg.email, cfg.imap.host, cfg.provider, cfg.caldavUrl, await srvStarts(cfg.email));
+  const creds = { username: cfg.username || cfg.email, password: raw };
+  const found = await discoverCalDav(starts, creds);
+  if (!found) return null;
+  return new CalDavCalendar(cfg.id, found.home, creds, cfg.email, fetch, found.autoSchedule);
+}
+
+// Inbjudan eller inställt möte som mejl, när kalenderservern inte skickar dem själv.
+async function sendCalendarMail(cfg: AccountConfig, to: EventPerson[], method: 'REQUEST' | 'CANCEL', ics: string, title: string) {
+  const s = session(cfg.id);
+  const subject = method === 'CANCEL' ? t('Inställt: {title}', { title }) : t('Inbjudan: {title}', { title });
+  const text = method === 'CANCEL' ? t('Mötet "{title}" är inställt.', { title }) : t('Du är inbjuden till "{title}".', { title });
+  const { raw, recipients } = await buildRaw(cfg, {
+    to: to.map((p) => formatAddress({ name: p.name, address: p.email })).join(', '),
+    cc: '',
+    bcc: '',
+    subject,
+    text,
+    attachments: [],
+    icalEvent: { method, content: ics, filename: 'invite.ics' }
+  });
+  await sendRaw(cfg, await smtpSecret(s.credentialValue), raw, recipients);
+  if (cfg.provider !== 'gmail') await s.append('sent', raw, ['\\Seen']).catch((e) => log(`kunde inte spara i Skickat: ${e?.message}`));
+}
+
+const calendar = new CalendarService({
+  accounts: () => store.listAccounts(),
+  provider: calendarProvider,
+  get cache() {
+    return store;
+  },
+  sendInvite: sendCalendarMail,
+  onChange: () => scheduleCalendarBroadcast(),
+  log
+});
+
+let calendarBroadcastTimer: NodeJS.Timeout | null = null;
+function scheduleCalendarBroadcast() {
+  if (calendarBroadcastTimer) return;
+  calendarBroadcastTimer = setTimeout(() => {
+    calendarBroadcastTimer = null;
+    broadcast('calendar');
+  }, 150);
+}
+
 async function smtpSecret(cred: Credential): Promise<SmtpSecret> {
   return typeof cred === 'string' ? cred : { accessToken: await cred() };
 }
@@ -158,11 +276,14 @@ async function oauthLogin(input: AccountInput): Promise<{ ok: boolean; email?: s
   if (!provider) throw new Error(t('Kontot stöder inte inloggning med OAuth.'));
   oauthAbort?.abort();
   const abort = (oauthAbort = new AbortController());
+  // Kalenderbehörigheten behålls vid ny inloggning om kontot redan hade den.
+  const hadGraph = !!(cfg.id && readOAuthSecret(decrypt(store.getSecret(cfg.id)))?.graph);
+  const wantCalendar = provider === 'microsoft' && (!!input.calendar || hadGraph);
   let tokens;
   try {
     tokens = await authorize(provider, oauthClient(provider), openLoginPage, {
       loginHint: cfg.email || undefined,
-      endpoints: endpointsFor(provider),
+      endpoints: wantCalendar ? withCalendar(provider, endpointsFor(provider)) : endpointsFor(provider),
       signal: abort.signal
     });
   } catch (err: any) {
@@ -196,9 +317,15 @@ async function oauthLogin(input: AccountInput): Promise<{ ok: boolean; email?: s
   const errors = validateAccount(cfg);
   if (errors.length) return { ok: false, error: errors.join(' ') };
   store.saveAccount(cfg);
-  store.setSecret(cfg.id, encrypt(JSON.stringify({ oauth: provider, refreshToken: tokens.refreshToken! } satisfies OAuthSecret)));
+  store.setSecret(
+    cfg.id,
+    encrypt(JSON.stringify({ oauth: provider, refreshToken: tokens.refreshToken!, scope: tokens.scope, graph: wantCalendar || undefined } satisfies OAuthSecret))
+  );
   accessTokens.set(cfg.id, { token: tokens.accessToken, expiresAt: tokens.expiresAt });
+  graphTokens.delete(cfg.id);
+  calendar.invalidate(cfg.id);
   startSession(cfg);
+  void calendar.refresh(cfg.id).catch(() => undefined);
   notifyChanged();
   return { ok: true, email: cfg.email };
 }
@@ -517,7 +644,8 @@ function updateDir(): string {
 const SETUP_RE = () => new RegExp(`^${APP_FILE_NAME}-Setup-(\\d+\\.\\d+\\.\\d+)\\.exe$`);
 
 async function latestRelease(): Promise<{ version: string; url: string } | null> {
-  if (!GITHUB_REPO || !app.isPackaged || process.env.MRMAIL_DATA) return null;
+  // Installerad med Scoop: Scoop sköter uppdateringen, annars hamnar en andra kopia under Programs.
+  if (!GITHUB_REPO || !app.isPackaged || process.env.MRMAIL_DATA || /[\\/]scoop[\\/]apps[\\/]/i.test(process.execPath)) return null;
   const res = await net.fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
     headers: { accept: 'application/vnd.github+json', 'user-agent': `${APP_FILE_NAME}/${APP_VERSION}` }
   });
@@ -806,7 +934,9 @@ const bodyInflight = new Map<string, Promise<MessageBody>>();
 
 function loadBody(id: string, background = false): Promise<MessageBody> {
   const cached = store.getBody(id);
-  if (cached) return Promise.resolve(cached);
+  // Cache från före kalenderstödet saknar inbjudan: hämta om mejl med en kalenderdel.
+  const stale = cached && cached.invite === undefined && cached.attachments.some((a) => isCalendarPart(a.contentType, a.filename));
+  if (cached && !stale) return Promise.resolve(cached);
   let p = bodyInflight.get(id);
   if (!p) {
     p = fetchBody(id, background).finally(() => bodyInflight.delete(id));
@@ -860,6 +990,96 @@ async function openMessage(id: string, markSeen = true): Promise<FullMessage> {
       .catch((e) => log(`kunde inte markera läst: ${e?.message}`));
   }
   return { ...m, body };
+}
+
+// Kalenderinbjudningar: svaret skickas som iMIP till organisatören från kontot som bjöds in.
+async function respondInvite(id: string, response: InviteResponse, comment?: string): Promise<{ response: InviteResponse; calendar: boolean }> {
+  if (response !== 'accept' && response !== 'tentative' && response !== 'decline') throw new Error(t('Okänt svar.'));
+  const full = await openMessage(id, false);
+  const cfg = account(full.accountId);
+  const s = session(full.accountId);
+  const input = inviteReplyMail(cfg, full, response, comment);
+  const { raw, recipients } = await buildRaw(cfg, input);
+  await sendRaw(cfg, await smtpSecret(s.credentialValue), raw, recipients);
+  if (cfg.provider !== 'gmail') await s.append('sent', raw, ['\\Seen']).catch((e) => log(`kunde inte spara i Skickat: ${e?.message}`));
+  const ev = full.body.invite!.event;
+  store.setInviteAnswer(cfg.id, ev.uid, response, ev.sequence);
+  const calendar = await calendarAfterAnswer(cfg, full, response).catch((e) => {
+    log(`kalender: kunde inte uppdatera efter svar: ${e?.message}`);
+    return false;
+  });
+  notifyChanged();
+  return { response, calendar };
+}
+
+function inviteState(id: string): { response: InviteResponse | null; outdated: boolean; calendar: boolean } | null {
+  const m = store.getMessage(id);
+  const ev = store.getBody(id)?.invite?.event;
+  if (!m || !ev) return null;
+  const cfg = store.listAccounts().find((a) => a.id === m.accountId);
+  const saved = store.inviteAnswer(m.accountId, ev.uid);
+  const fromFile = partstatToResponse(partstatOf(ev, cfg ? [cfg.email] : []));
+  const outdated = !!saved && saved.sequence < ev.sequence && !fromFile;
+  return { response: outdated ? null : ((saved?.response as InviteResponse | undefined) ?? fromFile), outdated, calendar: !!cfg && calendarConnected(cfg.id) };
+}
+
+// Lägg till i kalendern: i den anslutna kalendern om det finns en, annars som fil.
+async function inviteAdd(id: string): Promise<'calendar' | 'file' | null> {
+  const full = await openMessage(id, false);
+  const inv = full.body.invite;
+  if (!inv) throw new Error(t('Mejlet innehåller ingen inbjudan.'));
+  const cfg = account(full.accountId);
+  if (calendarConnected(cfg.id)) {
+    await calendarAddInvite(cfg, full);
+    return 'calendar';
+  }
+  const ev = inv.event;
+  const ics = inv.ics
+    ? withoutMethod(inv.ics)
+    : buildEvent({ uid: ev.uid, title: ev.summary, start: ev.start, end: ev.end, allDay: ev.allDay, startDate: ev.startDate, endDate: ev.endDate, location: ev.location, description: ev.description });
+  const res = await dialog.showSaveDialog(BrowserWindow.getFocusedWindow() ?? mainWindow!, {
+    defaultPath: join(app.getPath('downloads'), `${safeName(ev.summary || t('Händelse'))}.ics`),
+    filters: [{ name: t('Kalenderfil'), extensions: ['ics'] }]
+  });
+  if (res.canceled || !res.filePath) return null;
+  writeFileSync(res.filePath, ics);
+  return 'file';
+}
+
+function calendarConnected(accountId: string): boolean {
+  return calendar.connected(accountId);
+}
+
+async function calendarAfterAnswer(cfg: AccountConfig, msg: FullMessage, response: InviteResponse): Promise<boolean> {
+  if (!msg.body.invite || !calendar.connected(cfg.id)) return false;
+  return calendar.saveInvite(cfg.id, msg.body.invite, response, inviteIdentity(cfg, msg));
+}
+
+async function calendarAddInvite(cfg: AccountConfig, msg: FullMessage): Promise<void> {
+  await calendar.saveInvite(cfg.id, msg.body.invite!, null, inviteIdentity(cfg, msg));
+}
+
+// Händelse från fönstret eller AI-verktygen, kontrollerad.
+function eventInput(raw: any): EventInput {
+  const title = String(raw?.title ?? '').trim();
+  const start = Number(raw?.start);
+  const end = Number(raw?.end);
+  if (!title) throw new Error(t('Händelsen behöver en titel.'));
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) throw new Error(t('Sluttiden måste vara efter starttiden.'));
+  const attendees = Array.isArray(raw?.attendees)
+    ? raw.attendees.map((a: any) => ({ name: String(a?.name ?? '').trim(), email: String(a?.email ?? '').trim().toLowerCase() })).filter((a: { email: string }) => /^[^\s@]+@[^\s@]+$/.test(a.email))
+    : undefined;
+  return {
+    title,
+    start,
+    end,
+    allDay: !!raw?.allDay,
+    startDate: typeof raw?.startDate === 'string' ? raw.startDate : undefined,
+    endDate: typeof raw?.endDate === 'string' ? raw.endDate : undefined,
+    location: typeof raw?.location === 'string' ? raw.location.trim() : undefined,
+    description: typeof raw?.description === 'string' ? raw.description : undefined,
+    attendees
+  };
 }
 
 const FLAG_NAMES = { seen: '\\Seen', flagged: '\\Flagged' } as const;
@@ -1303,7 +1523,9 @@ function saveAccount(input: AccountInput) {
   }
   store.saveAccount(cfg);
   if (input.password) store.setSecret(cfg.id, encrypt(input.password));
+  calendar.invalidate(cfg.id);
   startSession(cfg);
+  void calendar.refresh(cfg.id).catch(() => undefined);
   notifyChanged();
   return { ok: true, errors: [] };
 }
@@ -1410,15 +1632,21 @@ function registerIpc() {
     const gpt = models.filter((m) => /^(gpt-|chatgpt-|o\d)/i.test(m.id)).sort((a, b) => (b.created ?? 0) - (a.created ?? 0));
     return { latest: pickLatestGpt(models), models: gpt.map((m) => m.id) };
   });
-  handle('agent-info', () => {
-    const packaged = app.isPackaged;
-    const script = packaged ? join(process.resourcesPath, 'mr-mail-mcp.cjs') : join(here, '../mcp/mr-mail-mcp.cjs');
-    return {
-      running: !!agentServer,
-      command: packaged ? process.execPath : 'node',
-      args: [script],
-      env: packaged ? { ELECTRON_RUN_AS_NODE: '1' } : {}
-    };
+  handle('agent-info', () => agentInfo());
+  handle('agent-log', () => store.listAgentLog(50));
+  handle('agent-log-clear', () => store.clearAgentLog());
+  handle('agent-http-rotate', () => {
+    store.saveSettings({ agentHttpToken: newHttpToken() });
+    return store.getSettings().agentHttpToken;
+  });
+  handle('mcp-clients', () => clientStatus(clientEnv()));
+  handle('mcp-client-connect', (id: string) => {
+    clientChange(String(id), () => connectClient(String(id), clientEnv(), agentSpec()));
+    return clientStatus(clientEnv());
+  });
+  handle('mcp-client-disconnect', (id: string) => {
+    clientChange(String(id), () => disconnectClient(String(id), clientEnv()));
+    return clientStatus(clientEnv());
   });
   handle('clean-senders', (accountId?: string) => senderList(accountId));
   handle('prefetch', (ids: string[]) => prefetchBodies(Array.isArray(ids) ? ids.slice(0, 30) : []));
@@ -1435,6 +1663,12 @@ function registerIpc() {
   handle('account-save', (input: AccountInput) => saveAccount(input));
   handle('account-test', (input: AccountInput) => testAccount(input));
   handle('account-setup', (input: SetupInput) => autoSetup(input));
+  handle('calendar-state', () => calendar.states());
+  handle('calendar-refresh', (accountId?: string) => calendar.refresh(typeof accountId === 'string' ? accountId : undefined));
+  handle('calendar-events', (from: number, to: number) => calendar.events(Number(from), Number(to)));
+  handle('calendar-create', (raw: unknown, calendarKey?: string) => calendar.create(eventInput(raw), typeof calendarKey === 'string' ? calendarKey : undefined));
+  handle('calendar-delete', (id: string) => calendar.remove(String(id)));
+  handle('calendar-update', (id: string, patch: Partial<EventInput>) => calendar.update(String(id), patch && typeof patch === 'object' ? patch : {}));
   handle('account-delete', async (id: string) => {
     await sessions.get(id)?.stop();
     sessions.delete(id);
@@ -1477,7 +1711,9 @@ function registerIpc() {
   handle('sync-folder', async (accountId: string, path: string) => {
     await sessions.get(accountId)?.syncFolderNow(path);
   });
-  handle('settings-save', (patch: Partial<Settings>) => {
+  handle('settings-save', (raw: Partial<Settings>) => {
+    // Nyckeln för HTTP byts bara med agent-http-rotate, så att en gammal kopia i fönstret inte skriver över den.
+    const { agentHttpToken: _token, ...patch } = raw ?? {};
     store.saveSettings(patch);
     if ('signatures' in patch) applySignatures();
     if ('openAtLogin' in patch) applyLoginItem();
@@ -1490,7 +1726,7 @@ function registerIpc() {
         for (const w of BrowserWindow.getAllWindows()) w.webContents.reload();
       }
     }
-    if ('agentTools' in patch) void applyAgentServer();
+    if ('agentTools' in patch || 'agentHttp' in patch || 'agentHttpPort' in patch) void applyAgentServer();
     notifyChanged();
     return store.getSettings();
   });
@@ -1507,6 +1743,19 @@ function registerIpc() {
   handle('contacts', (query: string) => {
     const own = store.listAccounts().map((a) => a.email);
     return store.contacts(query, own);
+  });
+  handle('contact-list', (query: string, limit?: number) => {
+    const n = Number.isInteger(limit) && limit! > 0 ? Math.min(limit!, 2000) : 400;
+    return store.contactList(String(query ?? ''), store.listAccounts().map((a) => a.email), n);
+  });
+  handle('contact-detail', (address: string) => {
+    const d = store.contactDetail(String(address ?? ''));
+    // Kommande möten med personen, ur kalenderns cache för de närmaste 60 dagarna.
+    const now = Date.now();
+    const events = store.cachedEvents(now, now + 60 * 86400_000)
+      .filter((ev) => ev.status !== 'cancelled' && (ev.organizer?.email.toLowerCase() === d.address || ev.attendees.some((a) => a.email.toLowerCase() === d.address)))
+      .slice(0, 10);
+    return { ...d, events };
   });
   handle('file-info', (paths: string[]) =>
     paths
@@ -1526,6 +1775,9 @@ function registerIpc() {
     writeFileSync(file, data);
     return { filename: basename(file), path: file, size: data.byteLength };
   });
+  handle('invite-state', (id: string) => inviteState(String(id)));
+  handle('invite-respond', (id: string, response: InviteResponse, comment?: string) => respondInvite(String(id), response, typeof comment === 'string' ? comment : undefined));
+  handle('invite-add', (id: string) => inviteAdd(String(id)));
   handle('discard-draft', (msg: OutgoingMessage) => removeDraftVersions(msg, msg.draftKey ?? '', null));
 }
 
@@ -1765,9 +2017,54 @@ function checkOutbox() {
   }
 }
 
+// Hur AI-verktygen startar MCP-servern: med appens exe som Node i installerad app, annars med node.
+function agentSpec(): { command: string; args: string[]; env: Record<string, string> } {
+  const packaged = app.isPackaged;
+  const script = packaged ? join(process.resourcesPath, 'mr-mail-mcp.cjs') : join(here, '../mcp/mr-mail-mcp.cjs');
+  return { command: packaged ? process.execPath : 'node', args: [script], env: packaged ? { ELECTRON_RUN_AS_NODE: '1' } : {} };
+}
+
+// AI-verktygens inställningsfiler. MRMAIL_CLIENT_HOME pekar om allt till en testmapp.
+function clientEnv(): McpEnv {
+  const base = process.env.MRMAIL_CLIENT_HOME;
+  if (base) return { home: join(base, 'home'), appData: join(base, 'roaming'), localAppData: join(base, 'local') };
+  return envFromProcess();
+}
+
+function clientChange(id: string, fn: () => void) {
+  try {
+    fn();
+  } catch (e: any) {
+    const name = clientStatus(clientEnv()).find((c) => c.id === id)?.name ?? id;
+    if (e instanceof McpClientError && e.code === 'not-installed') throw new Error(t('{name} är inte installerat.', { name }));
+    if (e instanceof McpClientError && e.code === 'unreadable') throw new Error(t('Filen {file} gick inte att läsa och har inte ändrats.', { file: e.file ?? '' }));
+    throw new Error(t('Det gick inte att ändra inställningarna för {name}: {error}', { name, error: e?.message ?? String(e) }));
+  }
+}
+
 // AI-agenter via MCP. Bryggan startas när inställningen är på och stängs när den slås av.
 let agentServer: { stop: () => void } | null = null;
 let agentStarting = false;
+let agentHttp: { port: number; stop: () => void } | null = null;
+let agentHttpError = '';
+
+function agentInfo() {
+  const s = store.getSettings();
+  return {
+    running: !!agentServer,
+    ...agentSpec(),
+    http: {
+      on: s.agentTools && s.agentHttp,
+      running: !!agentHttp,
+      url: `http://127.0.0.1:${agentHttp?.port ?? s.agentHttpPort}/mcp`,
+      error: agentHttpError
+    }
+  };
+}
+
+function httpPort(p: number): number {
+  return Number.isInteger(p) && p >= 1024 && p <= 65535 ? p : 7337;
+}
 
 const agentHost: AgentHost = {
   attachment: async (id, index) => {
@@ -1775,6 +2072,15 @@ const agentHost: AgentHost = {
     return { filename: a.filename ?? '', contentType: a.contentType ?? '', content: a.content };
   },
   downloadsDir: () => app.getPath('downloads'),
+  inviteAnswer: (id) => inviteState(id)?.response ?? null,
+  calendars: () => calendar.calendars(),
+  calendarEvents: (from, to, f) => calendar.events(from, to, { accountIds: f.accountId ? [f.accountId] : undefined, calendar: f.calendar, query: f.query }),
+  freeSlots: (o) => calendar.freeSlots({ ...o, accountIds: o.accountId ? [o.accountId] : undefined }),
+  createEvent: (input, cal, accountId) => calendar.create(eventInput(input), cal, accountId),
+  updateEvent: (id, patch) => calendar.update(id, patch),
+  deleteEvent: (id) => calendar.remove(id),
+  getEvent: (id) => calendar.getEvent(id),
+  respondInvite: (id, response, comment) => respondInvite(id, response, comment),
   contacts: (query) => store.contacts(query, store.listAccounts().map((a) => a.email), 15),
   sendLater: async (msg, at) => {
     await queueSend(msg, at);
@@ -1847,19 +2153,191 @@ const agentHost: AgentHost = {
 };
 const agentCall = createAgent(agentHost);
 
-async function applyAgentServer() {
-  const on = store.getSettings().agentTools;
-  if (!on && agentServer) {
-    agentServer.stop();
-    agentServer = null;
-  } else if (on && !agentServer && !agentStarting) {
-    agentStarting = true;
+// Frågor om lov visas en i taget, med huvudfönstret framme.
+let askChain: Promise<unknown> = Promise.resolve();
+function askAgentPermission(req: AskRequest): Promise<boolean> {
+  const run = askChain.then(() => showAgentAsk(req));
+  askChain = run.catch(() => undefined);
+  return run;
+}
+
+async function showAgentAsk(req: AskRequest): Promise<boolean> {
+  // Testkrok för e2e: svara direkt i stället för att visa dialogen.
+  const test = process.env.MRMAIL_TEST_ASK;
+  if (test === 'allow' || test === 'deny') {
+    (globalThis as any).__mrmailAsked = [...((globalThis as any).__mrmailAsked ?? []), req.message];
+    return test === 'allow';
+  }
+  const hidden = !mainWindow || !mainWindow.isVisible() || mainWindow.isMinimized();
+  showMain();
+  const win = mainWindow;
+  if (!win) return false;
+  if (hidden && Notification.isSupported()) new Notification({ title: t('{app} behöver ditt svar', { app: APP_NAME }), body: req.message.slice(0, 240) }).show();
+  win.moveTop();
+  win.flashFrame(true);
+  try {
+    const res = await dialog.showMessageBox(win, {
+      type: 'question',
+      title: APP_NAME,
+      message: req.message,
+      detail: req.detail || undefined,
+      buttons: [t('Tillåt'), t('Neka')],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+      // Svarar ingen inom tre minuter räknas det som nej, så att verktyget inte väntar för evigt.
+      signal: AbortSignal.timeout(170_000)
+    });
+    return res.response === 0;
+  } finally {
+    win.flashFrame(false);
+  }
+}
+
+const agentGuarded = guardAgent(agentCall, {
+  permissions: () => store.getSettings().agentPermissions,
+  ask: askAgentPermission,
+  log(entry) {
+    store.addAgentLog(entry);
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('agent-log');
+  },
+  events(id) {
+    const ev = calendar.getEvent(id);
+    return ev ? { title: ev.title, attendees: ev.attendees.length, isOrganizer: ev.isOrganizer, start: ev.start } : null;
+  },
+  lookup(id) {
+    const m = store.getMessage(id);
+    return m ? { subject: m.subject, from: formatAddress(m.from), to: m.to.map(formatAddress).join(', ') } : null;
+  }
+});
+
+// Fråga Mr Mail: chatten i appen. Samtalet finns bara i minnet, per fönster och chatt.
+const chats = new Map<string, { history: ApiMessage[]; abort?: AbortController }>();
+
+async function chatEndpoint(): Promise<ChatEndpoint> {
+  const s = store.getSettings();
+  if (!chatSupported(s.aiEngine)) throw new Error(t('Chatten kräver ChatGPT med API-nyckel, en lokal modell eller en egen server.'));
+  if (s.aiEngine === 'openai') {
+    const key = openaiKey();
+    if (!key) throw new Error(t('Lägg in din API-nyckel från OpenAI under Inställningar, AI-hjälp.'));
+    return { url: s.openaiUrl || OPENAI_URL, key, model: await resolveOpenAiModel(s, key), label: 'ChatGPT', openai: true };
+  }
+  const local = s.aiEngine === 'local';
+  const url = local ? s.localUrl : s.sparkUrl;
+  if (!url.trim()) throw new Error(t('Ange serverns adress under Inställningar, AI-hjälp.'));
+  return { url, key: local ? s.localKey : s.sparkKey, model: local ? s.localModel : s.sparkModel, label: local ? t('Datorns modell') : t('Egen server'), openai: false };
+}
+
+function senderName(id: string): string | null {
+  const m = store.getMessage(id);
+  return m ? m.from.name || m.from.address || null : null;
+}
+
+async function chatSend(sender: WebContents, chatId: string, text: string): Promise<ChatAnswer> {
+  const ep = await chatEndpoint();
+  const system: ApiMessage = { role: 'system', content: chatSystemPrompt(new Date(), localZoneName()) };
+  let chat = chats.get(chatId);
+  if (!chat) {
+    chat = { history: [system] };
+    chats.set(chatId, chat);
+    while (chats.size > 12) chats.delete(chats.keys().next().value!);
+  } else chat.history[0] = system;
+  chat.abort?.abort();
+  const ctrl = new AbortController();
+  chat.abort = ctrl;
+  const before = chat.history.length;
+  const steps: ChatStep[] = [];
+  chat.history.push({ role: 'user', content: text.slice(0, 8000) });
+  let answer: string;
+  try {
+    answer = await runChatLoop({
+      history: chat.history,
+      complete: openAiCompleter(ep, AGENT_TOOLS, ctrl.signal),
+      call: (tool, args) => agentGuarded(tool, args, { client: APP_NAME }),
+      signal: ctrl.signal,
+      onStep(s) {
+        const step: ChatStep = { id: s.id, label: stepLabel(s.tool, s.args, senderName), done: s.done, ok: s.ok };
+        const i = steps.findIndex((x) => x.id === step.id);
+        if (i >= 0) steps[i] = step;
+        else steps.push(step);
+        if (!sender.isDestroyed()) sender.send('chat-step', chatId, step);
+      }
+    });
+  } catch (e) {
+    // Ett avbrutet eller misslyckat varv tas bort, så att nästa fråga börjar från ett helt samtal.
+    chat.history.length = before;
+    throw e;
+  } finally {
+    if (chat.abort === ctrl) chat.abort = undefined;
+  }
+  compactHistory(chat.history);
+  if (!answer) throw new Error(t('{label} gav ett tomt svar.', { label: ep.label }));
+  const refs: ChatRefs = { mail: {}, event: {} };
+  for (const l of findRefLinks(answer)) {
+    if (l.kind === 'mail' && store.getMessage(l.id)) refs.mail[l.id] = l.label;
+    else if (l.kind === 'event' && calendar.getEvent(l.id)) refs.event[l.id] = l.label;
+  }
+  return { text: answer, refs, steps };
+}
+
+function registerChatIpc() {
+  ipcMain.handle('chat-send', async (e, chatId: string, text: string) => {
     try {
-      agentServer = await startAgentServer(app.getPath('userData'), agentCall, log);
-    } catch (e: any) {
-      log(`mcp: kunde inte starta: ${e?.message}`);
-    } finally {
-      agentStarting = false;
+      return { ok: true, value: await chatSend(e.sender, String(chatId), String(text ?? '')) };
+    } catch (err: any) {
+      // Felet loggas utan text, eftersom svaret från servern kan citera mejlen.
+      if (!(err instanceof ChatAborted)) log('chat-send: misslyckades');
+      return { ok: false, error: err instanceof ChatAborted ? t('Avbrutet.') : (err?.message ?? String(err)) };
+    }
+  });
+  handle('chat-cancel', (chatId: string) => chats.get(String(chatId))?.abort?.abort());
+  handle('chat-reset', (chatId: string) => {
+    const chat = chats.get(String(chatId));
+    chat?.abort?.abort();
+    chats.delete(String(chatId));
+  });
+}
+
+let agentAgain = false;
+async function applyAgentServer() {
+  if (agentStarting) {
+    agentAgain = true;
+    return;
+  }
+  agentStarting = true;
+  try {
+    const s = store.getSettings();
+    if (!s.agentTools && agentServer) {
+      agentServer.stop();
+      agentServer = null;
+    } else if (s.agentTools && !agentServer) {
+      try {
+        agentServer = await startAgentServer(app.getPath('userData'), agentGuarded, log);
+      } catch (e: any) {
+        log(`mcp: kunde inte starta: ${e?.message}`);
+      }
+    }
+    const wantHttp = s.agentTools && s.agentHttp;
+    const port = httpPort(s.agentHttpPort);
+    if (agentHttp && (!wantHttp || agentHttp.port !== port)) {
+      agentHttp.stop();
+      agentHttp = null;
+    }
+    agentHttpError = '';
+    if (wantHttp && !agentHttp) {
+      if (!store.getSettings().agentHttpToken) store.saveSettings({ agentHttpToken: newHttpToken() });
+      try {
+        agentHttp = await startAgentHttp({ port, token: () => store.getSettings().agentHttpToken, call: agentGuarded, log });
+      } catch (e: any) {
+        agentHttpError = e?.code === 'EADDRINUSE' ? t('Porten {port} används redan av ett annat program.', { port }) : String(e?.message ?? e);
+        log(`mcp http: kunde inte starta: ${e?.message}`);
+      }
+    }
+  } finally {
+    agentStarting = false;
+    if (agentAgain) {
+      agentAgain = false;
+      void applyAgentServer();
     }
   }
 }
@@ -1874,14 +2352,19 @@ app.whenReady().then(() => {
     for (const a of defaultAccounts(process.env.MRMAIL_SEED)) store.saveAccount(a);
   }
   migrateOldSignatures();
+  calendar.load();
   applyLanguage();
   applyTheme();
   registerIpc();
+  registerChatIpc();
   createMainWindow();
   createTray();
   applyLoginItem();
   for (const a of store.listAccounts()) startSession(a);
   void applyAgentServer();
+  // Kalendern uppdateras strax efter start och var femtonde minut.
+  setTimeout(() => void calendar.refresh().catch(() => undefined), 6000);
+  setInterval(() => void calendar.refresh().catch(() => undefined), 15 * 60_000);
   setInterval(() => {
     checkReminders();
     checkOutbox();
@@ -1902,6 +2385,8 @@ app.on('before-quit', () => {
   quitting = true;
   agentServer?.stop();
   agentServer = null;
+  agentHttp?.stop();
+  agentHttp = null;
 });
 
 app.on('window-all-closed', async () => {

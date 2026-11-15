@@ -164,6 +164,11 @@ export const Close = (p: P) => (
     <path d="M6 6l12 12M18 6 6 18" />
   </Svg>
 );
+export const Check = (p: P) => (
+  <Svg strokeWidth={2.2} {...p}>
+    <path d="m5 12.5 4.5 4.5L19 7.5" />
+  </Svg>
+);
 export const Download = (p: P) => (
   <Svg {...p}>
     <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />
@@ -239,5 +244,29 @@ export const Printer = (p: P) => (
 export const Filter = (p: P) => (
   <Svg {...p}>
     <path d="M4 6h16M7 12h10M10 18h4" />
+  </Svg>
+);
+export const Calendar = (p: P) => (
+  <Svg {...p}>
+    <rect x="3.5" y="5" width="17" height="15" rx="2.5" />
+    <path d="M3.5 10h17M8 3v4M16 3v4" />
+  </Svg>
+);
+export const Pin = (p: P) => (
+  <Svg {...p}>
+    <path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" />
+    <circle cx="12" cy="10" r="2.3" />
+  </Svg>
+);
+export const Video = (p: P) => (
+  <Svg {...p}>
+    <rect x="3" y="6.5" width="12.5" height="11" rx="2.2" />
+    <path d="m15.5 10.5 5-3v9l-5-3" />
+  </Svg>
+);
+export const People = (p: P) => (
+  <Svg {...p}>
+    <circle cx="9" cy="8.5" r="3.2" />
+    <path d="M3.5 19a5.5 5.5 0 0 1 11 0M15.5 5.6a3 3 0 0 1 0 5.8M17.5 14.2A5.4 5.4 0 0 1 20.5 19" />
   </Svg>
 );

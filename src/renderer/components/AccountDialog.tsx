@@ -16,6 +16,7 @@ interface Props {
   status?: AccountStatus;
   // Öppnat från Logga in i sidopanelen: visa rätt inloggning direkt.
   login?: boolean;
+  calendar?: boolean;
   signatures: Signature[];
   onEditSignatures?(): void;
   onClose(): void;
@@ -33,7 +34,7 @@ export function lastSyncText(s?: AccountStatus): string {
 
 const securityLabel = (): Record<Security, string> => ({ ssl: 'SSL/TLS', starttls: 'STARTTLS', none: t('Ingen') });
 
-export function AccountDialog({ accounts, accountId, status, login, signatures, onEditSignatures, onClose, onSaved }: Props) {
+export function AccountDialog({ accounts, accountId, status, login, calendar, signatures, onEditSignatures, onClose, onSaved }: Props) {
   const existing = accounts.find((a) => a.id === accountId);
   const [adding, setAdding] = useState(!existing || (!!login && existing.provider !== 'manual'));
   const [step, setStep] = useState<'provider' | 'form'>(existing ? 'form' : 'provider');
@@ -128,7 +129,7 @@ export function AccountDialog({ accounts, accountId, status, login, signatures, 
     setErrors([]);
     setBusy(t('Logga in hos {name} i webbläsaren…', { name: oauthName }));
     try {
-      const res = await api.oauthLogin({ config: { ...c, auth: 'oauth' } });
+      const res = await api.oauthLogin({ config: { ...c, auth: 'oauth' }, calendar });
       setBusy(null);
       if (res.ok) onSaved();
       else setErrors([res.error ?? t('Inloggningen misslyckades.')]);
@@ -389,6 +390,10 @@ export function AccountDialog({ accounts, accountId, status, login, signatures, 
               <input type="checkbox" checked={cfg.notify !== false} onChange={(e) => setCfg({ ...cfg, notify: e.target.checked })} />
               <span>{t('Aviseringar för nya mejl i det här kontot')}</span>
             </label>
+            <label className="check">
+              <input type="checkbox" id="account-calendar" checked={cfg.calendar !== false} onChange={(e) => setCfg({ ...cfg, calendar: e.target.checked })} />
+              <span>{t('Visa kontots kalender')}</span>
+            </label>
 
             <button className="link disclosure" onClick={() => setAdvanced(!advanced)}>
               <I.Chevron size={12} className={cx(advanced && 'rot')} /> {t('Servrar och avancerat')}
@@ -405,6 +410,12 @@ export function AccountDialog({ accounts, accountId, status, login, signatures, 
                   <input type="checkbox" checked={!!cfg.allowInsecureTls} onChange={(e) => setCfg({ ...cfg, allowInsecureTls: e.target.checked })} />
                   <span>{t('Godta självsignerade certifikat (bara för egna servrar)')}</span>
                 </label>
+                {cfg.auth !== 'oauth' && (
+                  <label className="field">
+                    <span>{t('Kalenderadress (CalDAV), om den inte hittas automatiskt')}</span>
+                    <input id="account-caldav" value={cfg.caldavUrl ?? ''} placeholder="https://" onChange={(e) => setCfg({ ...cfg, caldavUrl: e.target.value.trim() || undefined })} spellCheck={false} />
+                  </label>
+                )}
               </div>
             )}
 

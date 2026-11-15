@@ -1,6 +1,7 @@
 import type { CleanAction, SenderStat } from '../shared/cleanup';
 import type {
   AccountConfig,
+  AgentLogEntry,
   OutboxInfo,
   AccountInput,
   AccountStatus,
@@ -10,9 +11,12 @@ import type {
   ComposeDraft,
   ComposeInit,
   Contact,
+  ContactDetail,
+  ContactRow,
   Folder,
   FolderRole,
   FullMessage,
+  InviteResponse,
   MailboxSelection,
   MessageSummary,
   OutgoingAttachment,
@@ -26,6 +30,8 @@ import type {
   TestResult
 } from '../shared/types';
 import type { SparkSignature } from '../shared/signatures';
+import type { CalendarAccountState, CalendarEvent, EventInput } from '../shared/calendar';
+import type { ChatAnswer } from '../shared/chat';
 
 export interface SparkExport {
   path: string;
@@ -43,6 +49,16 @@ export interface AgentInfo {
   command: string;
   args: string[];
   env: Record<string, string>;
+  http: { on: boolean; running: boolean; url: string; error: string };
+}
+
+export interface McpClientInfo {
+  id: string;
+  name: string;
+  installed: boolean;
+  connected: boolean;
+  managed: boolean;
+  path: string;
 }
 
 export interface AppState {
@@ -82,6 +98,20 @@ interface Api {
   outboxEdit(id: string): Promise<void>;
   saveDraft(msg: OutgoingMessage): Promise<string>;
   discardDraft(msg: OutgoingMessage): Promise<void>;
+  inviteState(id: string): Promise<{ response: InviteResponse | null; outdated: boolean; calendar: boolean } | null>;
+  inviteRespond(id: string, response: InviteResponse, comment?: string): Promise<{ response: InviteResponse; calendar: boolean }>;
+  inviteAdd(id: string): Promise<'calendar' | 'file' | null>;
+  calendarState(): Promise<CalendarAccountState[]>;
+  calendarRefresh(accountId?: string): Promise<void>;
+  calendarEvents(from: number, to: number): Promise<CalendarEvent[]>;
+  calendarCreate(input: EventInput, calendarKey?: string): Promise<CalendarEvent>;
+  calendarDelete(id: string): Promise<CalendarEvent>;
+  calendarUpdate(id: string, patch: Partial<EventInput>): Promise<CalendarEvent>;
+  chatSend(chatId: string, text: string): Promise<ChatAnswer>;
+  chatCancel(chatId: string): Promise<void>;
+  chatReset(chatId: string): Promise<void>;
+  contactList(query: string, limit?: number): Promise<ContactRow[]>;
+  contactDetail(address: string): Promise<ContactDetail>;
   contacts(query: string): Promise<Contact[]>;
   fileInfo(paths: string[]): Promise<OutgoingAttachment[]>;
   pathForFile(file: File): string;
@@ -98,6 +128,12 @@ interface Api {
   openaiModels(): Promise<{ latest: string | null; models: string[] }>;
   codexStatus(fresh?: boolean): Promise<{ installed: boolean; chatgpt: boolean; detail: string }>;
   agentInfo(): Promise<AgentInfo>;
+  mcpClients(): Promise<McpClientInfo[]>;
+  agentHttpRotate(): Promise<string>;
+  agentLog(): Promise<AgentLogEntry[]>;
+  agentLogClear(): Promise<void>;
+  mcpClientConnect(id: string): Promise<McpClientInfo[]>;
+  mcpClientDisconnect(id: string): Promise<McpClientInfo[]>;
   cleanSenders(accountId?: string): Promise<SenderStat[]>;
   prefetch(ids: string[]): Promise<void>;
   cleanScan(): Promise<number>;
@@ -121,7 +157,7 @@ interface Api {
   syncFolder(accountId: string, path: string): Promise<void>;
   saveSettings(patch: Partial<Settings>): Promise<Settings>;
   closeWindow(): void;
-  on(channel: 'changed' | 'open-message' | 'theme' | 'before-close' | 'setup-progress' | 'clean-progress' | 'outbox' | 'update', fn: (...args: any[]) => void): () => void;
+  on(channel: 'changed' | 'open-message' | 'theme' | 'before-close' | 'setup-progress' | 'clean-progress' | 'outbox' | 'update' | 'agent-log' | 'calendar' | 'chat-step', fn: (...args: any[]) => void): () => void;
 }
 
 export const api: Api = (window as any).api;

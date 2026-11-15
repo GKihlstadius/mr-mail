@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import type { Settings, ThemeChoice } from '../../shared/types';
-import { api, type AgentInfo } from '../api';
+import type { AgentLogEntry, AgentPermission, AgentPermissions, Settings, ThemeChoice } from '../../shared/types';
+import { api, type AgentInfo, type McpClientInfo } from '../api';
 import { cx } from '../util';
 import { APP_NAME } from '../../shared/brand';
-import { t, tn } from '../../shared/i18n';
+import { locale, t, tn } from '../../shared/i18n';
 import * as I from './Icons';
 
 const themes = (): [ThemeChoice, string][] => [
@@ -17,6 +17,26 @@ const languages = (): [Settings['language'], string][] => [
   ['sv', 'Svenska'],
   ['en', 'English']
 ];
+
+const permissionRows = (): [keyof AgentPermissions, string][] => [
+  ['send', t('Skicka mejl')],
+  ['delete', t('Radera mejl')],
+  ['unsubscribe', t('Avregistrera och städa')]
+];
+
+const permissionChoices = (): [AgentPermission, string][] => [
+  ['ask', t('Fråga först')],
+  ['allow', t('Tillåt alltid')],
+  ['never', t('Aldrig')]
+];
+
+function logTime(at: number): string {
+  const d = new Date(at);
+  const today = new Date().toDateString() === d.toDateString();
+  return today
+    ? d.toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleString(locale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
 
 interface Props {
   settings: Settings;
@@ -37,13 +57,36 @@ export function SettingsDialog({ settings, onEditSignatures, onClose, onSaved }:
   const [codex, setCodex] = useState<{ installed: boolean; chatgpt: boolean; detail: string } | null>(null);
   const [agent, setAgent] = useState<AgentInfo | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [clients, setClients] = useState<McpClientInfo[] | null>(null);
+  const [clientBusy, setClientBusy] = useState<string | null>(null);
+  const [clientNote, setClientNote] = useState<{ error: boolean; text: string } | null>(null);
+  const [showToken, setShowToken] = useState(false);
+  const [activity, setActivity] = useState<AgentLogEntry[]>([]);
 
   useEffect(() => {
     void api.oauthConfig().then((c) => setHasGoogleSecret(c.hasGoogleSecret)).catch(() => undefined);
     void api.openaiStatus().then((st) => setHasOpenaiKey(st.hasKey)).catch(() => undefined);
     void api.codexStatus().then(setCodex).catch(() => undefined);
     void api.agentInfo().then(setAgent).catch(() => undefined);
+    void api.mcpClients().then(setClients).catch(() => undefined);
+    const loadLog = () => void api.agentLog().then(setActivity).catch(() => undefined);
+    loadLog();
+    return api.on('agent-log', loadLog);
   }, []);
+
+  const toggleClient = async (c: McpClientInfo) => {
+    setClientBusy(c.id);
+    setClientNote(null);
+    try {
+      const connect = !c.connected;
+      setClients(connect ? await api.mcpClientConnect(c.id) : await api.mcpClientDisconnect(c.id));
+      setClientNote({ error: false, text: connect ? t('Starta om {name} så att {app} syns där.', { name: c.name, app: APP_NAME }) : t('{name} är bortkopplat. Starta om {name}.', { name: c.name }) });
+    } catch (e: any) {
+      setClientNote({ error: true, text: e.message });
+    } finally {
+      setClientBusy(null);
+    }
+  };
 
   const copy = (key: string, text: string) => {
     void navigator.clipboard.writeText(text).then(() => {
@@ -85,7 +128,7 @@ export function SettingsDialog({ settings, onEditSignatures, onClose, onSaved }:
     if (openaiKey.trim()) await api.openaiKeySave(openaiKey.trim());
     await api.oauthConfigSave({ googleClientId: s.googleClientId, microsoftClientId: s.microsoftClientId, googleClientSecret: googleSecret || undefined });
     // Signaturerna sparas i sin egen dialog och skrivs inte över härifrån.
-    const { signatures: _sigs, sparkOffered: _offered, ...rest } = s;
+    const { signatures: _sigs, sparkOffered: _offered, agentHttpToken: _token, ...rest } = s;
     await api.saveSettings(rest);
     setSaving(false);
     onSaved();
@@ -267,17 +310,150 @@ export function SettingsDialog({ settings, onEditSignatures, onClose, onSaved }:
               <p className="muted small">
                 {t('Verktyget skickar bara när du ber om det, annars hamnar svaren i Utkast och öppnas här. {app} startas dold i systemfältet om den inte redan är igång.', { app: APP_NAME })}
               </p>
-              {snippets(agent).map(([key, label, text]) => (
-                <div className="snippet" key={key}>
-                  <div className="snippet-head">
-                    <span>{label}</span>
-                    <button className="btn small" onClick={() => copy(key, text)}>
-                      {copied === key ? t('Kopierat') : t('Kopiera')}
+              {clients && (
+                <div className="client-list" id="mcp-clients">
+                  {clients.map((c) => (
+                    <div className={cx('client-row', !c.installed && 'missing')} key={c.id} data-client={c.id}>
+                      <div className="client-name">
+                        <span>{c.name}</span>
+                        {c.connected ? (
+                          <span className="client-state on">
+                            <I.Check size={12} /> {t('Ansluten')}
+                          </span>
+                        ) : !c.installed ? (
+                          <span className="client-state">{t('Inte installerad')}</span>
+                        ) : null}
+                      </div>
+                      {c.installed && (!c.connected || c.managed) ? (
+                        <button className="btn small" disabled={clientBusy === c.id} onClick={() => void toggleClient(c)}>
+                          {c.connected ? t('Koppla från') : t('Anslut')}
+                        </button>
+                      ) : c.connected ? (
+                        <span className="muted small" title={c.path}>
+                          {t('Inlagd för hand')}
+                        </span>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {clientNote && <p className={cx('small', clientNote.error ? 'error-text' : 'muted')}>{clientNote.text}</p>}
+              <label className="check">
+                <input id="agent-http" type="checkbox" checked={s.agentHttp} onChange={(e) => setS({ ...s, agentHttp: e.target.checked })} />
+                <span>{t('Ta emot anslutningar via en adress (HTTP) för verktyg som inte kan starta program')}</span>
+              </label>
+              {s.agentHttp && (
+                <div className="http-setup">
+                  <div className="settings-row">
+                    <span className="grow">{t('Port')}</span>
+                    <input
+                      id="agent-http-port"
+                      className="port-input"
+                      inputMode="numeric"
+                      value={s.agentHttpPort}
+                      onChange={(e) => setS({ ...s, agentHttpPort: Math.min(65535, Number(e.target.value.replace(/\D/g, '')) || 0) })}
+                    />
+                  </div>
+                  <div className="settings-row">
+                    <span className="grow">{t('Nyckel')}</span>
+                    <code className="token" id="agent-http-token">
+                      {s.agentHttpToken ? (showToken ? s.agentHttpToken : `${s.agentHttpToken.slice(0, 6)}${'•'.repeat(14)}`) : t('Skapas när du sparar')}
+                    </code>
+                    {s.agentHttpToken && (
+                      <>
+                        <button className="btn small" onClick={() => setShowToken((v) => !v)}>
+                          {showToken ? t('Dölj') : t('Visa')}
+                        </button>
+                        <button className="btn small" onClick={() => copy('token', s.agentHttpToken)}>
+                          {copied === 'token' ? t('Kopierat') : t('Kopiera')}
+                        </button>
+                      </>
+                    )}
+                    <button
+                      className="btn small"
+                      id="agent-http-rotate"
+                      onClick={() =>
+                        void api.agentHttpRotate().then((tok) => {
+                          setS((cur) => ({ ...cur, agentHttpToken: tok }));
+                          setClientNote({ error: false, text: t('Ny nyckel. Den gamla slutar fungera direkt.') });
+                        })
+                      }
+                    >
+                      {t('Ny nyckel')}
                     </button>
                   </div>
-                  <pre>{text}</pre>
+                  {agent.http.error && <p className="small error-text">{agent.http.error}</p>}
                 </div>
-              ))}
+              )}
+              <div className="section-sub">{t('Behörigheter')}</div>
+              <div className="permission-list" id="agent-permissions">
+                {permissionRows().map(([key, label]) => (
+                  <div className="settings-row" key={key}>
+                    <span className="grow">{label}</span>
+                    <select
+                      id={`perm-${key}`}
+                      className="clean-sort"
+                      value={s.agentPermissions?.[key] ?? 'ask'}
+                      onChange={(e) => setS({ ...s, agentPermissions: { ...s.agentPermissions, [key]: e.target.value as AgentPermission } })}
+                    >
+                      {permissionChoices().map(([v, l]) => (
+                        <option key={v} value={v}>
+                          {l}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+              <div className="section-sub activity-head">
+                <span className="grow">{t('Aktivitet')}</span>
+                {activity.length > 0 && (
+                  <button className="btn small" id="agent-log-clear" onClick={() => void api.agentLogClear().then(() => setActivity([]))}>
+                    {t('Rensa')}
+                  </button>
+                )}
+              </div>
+              {activity.length ? (
+                <div className="activity-list" id="agent-activity">
+                  {activity.map((e) => (
+                    <div className={cx('activity-row', !e.ok && 'failed')} key={e.id} title={e.error || undefined}>
+                      <span className="activity-time">{logTime(e.at)}</span>
+                      <span className="activity-tool">{e.tool}</span>
+                      <span className="activity-summary">
+                        {e.client ? `${e.client}: ` : ''}
+                        {e.error ? `${e.summary}${e.summary ? '. ' : ''}${e.error}` : e.summary}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="muted small">{t('Inga anrop än.')}</p>
+              )}
+              <details className="manual-setup">
+                <summary>{t('Visa manuell installation')}</summary>
+                {snippets(agent).map(([key, label, text]) => (
+                  <div className="snippet" key={key}>
+                    <div className="snippet-head">
+                      <span>{label}</span>
+                      <button className="btn small" onClick={() => copy(key, text)}>
+                        {copied === key ? t('Kopierat') : t('Kopiera')}
+                      </button>
+                    </div>
+                    <pre>{text}</pre>
+                  </div>
+                ))}
+                {s.agentHttp && (
+                  <div className="snippet">
+                    <div className="snippet-head">
+                      <span>{t('Adress för HTTP (Streamable HTTP)')}</span>
+                      <button className="btn small" onClick={() => copy('http', httpUrl(s.agentHttpPort))}>
+                        {copied === 'http' ? t('Kopierat') : t('Kopiera')}
+                      </button>
+                    </div>
+                    <pre>{`${httpUrl(s.agentHttpPort)}\nAuthorization: Bearer ${t('<nyckeln ovan>')}`}</pre>
+                  </div>
+                )}
+              </details>
             </div>
           )}
 
@@ -365,6 +541,10 @@ export function SettingsDialog({ settings, onEditSignatures, onClose, onSaved }:
       </div>
     </div>
   );
+}
+
+function httpUrl(port: number) {
+  return `http://127.0.0.1:${port || 7337}/mcp`;
 }
 
 function snippets(a: AgentInfo): [string, string, string][] {

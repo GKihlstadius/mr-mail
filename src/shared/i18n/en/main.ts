@@ -1,4 +1,12 @@
 export const main: Record<string, string> = {
+  // AI-verktyg
+  '{name} är inte installerat.': '{name} is not installed.',
+  '{app} behöver ditt svar': '{app} needs your answer',
+  'Tillåt': 'Allow',
+  'Neka': 'Deny',
+  'Porten {port} används redan av ett annat program.': 'Port {port} is already used by another program.',
+  'Filen {file} gick inte att läsa och har inte ändrats.': 'The file {file} could not be read and has not been changed.',
+  'Det gick inte att ändra inställningarna för {name}: {error}': 'Could not change the settings for {name}: {error}',
   // Notiser, tray och fönster
   '(inget ämne)': '(no subject)',
   'Arkivera': 'Archive',

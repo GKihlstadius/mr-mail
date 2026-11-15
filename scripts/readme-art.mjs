@@ -50,7 +50,7 @@ const banner = (w, h) => `<style>${base}
     <h1>Mr <span>Mail</span></h1>
     <div class="tag">The email client your AI agent can drive.</div>
     <div class="sub">Fast, private and local first. Free for Windows.</div>
-    <div class="pills"><span class="pill"><b>MCP</b> 22 tools</span><span class="pill"><b>Local</b> first</span><span class="pill"><b>MIT</b> open source</span></div>
+    <div class="pills"><span class="pill"><b>MCP</b> 28 tools</span><span class="pill"><b>Local</b> first</span><span class="pill"><b>MIT</b> open source</span></div>
   </div>
 </div>`;
 

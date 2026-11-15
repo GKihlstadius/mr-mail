@@ -1,12 +1,13 @@
-// MCP-server för Brevlåda över stdio. Startas av Claude Code, Zed eller opencode, antingen med
-// Node eller med appens exe och ELECTRON_RUN_AS_NODE=1. Anropen skickas vidare till appen,
-// som startas dold i systemfältet om den inte redan körs.
+// MCP-server för Mr Mail över stdio. Startas av Claude Code, Zed, Claude Desktop (som tillägg) eller
+// opencode, antingen med Node eller med appens exe och ELECTRON_RUN_AS_NODE=1. Anropen skickas vidare
+// till appen, som startas dold i systemfältet om den inte redan körs. Inget här kräver Electron.
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { AGENT_INSTRUCTIONS, AGENT_TOOLS, TOOL_ALIASES, type AgentArgs } from '../shared/agentTools';
-import { APP_FILE_NAME, APP_NAME, APP_VERSION, dataDirName } from '../shared/brand';
+import { AGENT_TOOLS, TOOL_ALIASES, type AgentArgs } from '../shared/agentTools';
+import { APP_FILE_NAME, APP_NAME, dataDirName } from '../shared/brand';
+import { handleMcp, type McpSession } from '../shared/mcpRpc';
 
 const appData = process.env.APPDATA || join(process.env.USERPROFILE || '', 'AppData', 'Roaming');
 const dataDir = process.env.MRMAIL_DATA || join(appData, dataDirName((n) => existsSync(join(appData, n))));
@@ -26,11 +27,11 @@ function readEndpoint(): Endpoint | null {
   }
 }
 
-async function post(ep: Endpoint, tool: string, args: AgentArgs): Promise<{ text?: string; error?: string }> {
+async function post(ep: Endpoint, tool: string, args: AgentArgs, client?: string): Promise<{ text?: string; error?: string }> {
   const res = await fetch(`http://127.0.0.1:${ep.port}/call`, {
     method: 'POST',
     headers: { authorization: `Bearer ${ep.token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ tool, args }),
+    body: JSON.stringify({ tool, args, client }),
     signal: AbortSignal.timeout(180_000)
   });
   if (res.status === 401) throw Object.assign(new Error('stale'), { stale: true });
@@ -76,7 +77,8 @@ function watchTools() {
 
 function appCommand(): string | null {
   if (process.env.MRMAIL_APP) return process.env.MRMAIL_APP;
-  if (process.versions.electron) return process.execPath;
+  // Bara när servern körs av appens egen exe. Claude Desktop kör tillägg med sin egen Electron.
+  if (process.versions.electron && basename(process.execPath).toLowerCase() === `${APP_FILE_NAME}.exe`.toLowerCase()) return process.execPath;
   const installed = join(process.env.LOCALAPPDATA || '', 'Programs', 'mr-mail', `${APP_FILE_NAME}.exe`);
   return existsSync(installed) ? installed : null;
 }
@@ -109,12 +111,12 @@ function startApp(): Promise<void> {
   return starting;
 }
 
-async function callApp(tool: string, args: AgentArgs): Promise<{ text?: string; error?: string }> {
+async function callApp(tool: string, args: AgentArgs, client?: string): Promise<{ text?: string; error?: string }> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const ep = readEndpoint();
     if (ep) {
       try {
-        return await post(ep, tool, args);
+        return await post(ep, tool, args, client);
       } catch (e: any) {
         if (attempt === 1 || !(e?.stale || e?.cause?.code === 'ECONNREFUSED' || /fetch failed/.test(e?.message))) throw e;
       }
@@ -128,57 +130,28 @@ function send(msg: unknown) {
   process.stdout.write(`${JSON.stringify(msg)}\n`);
 }
 
-async function handle(req: { id?: number | string; method: string; params?: any }) {
-  const { id, method, params } = req;
-  if (id === undefined || id === null) return; // notifieringar
-  try {
-    switch (method) {
-      case 'initialize':
-        await refreshTools();
-        watchTools();
-        return send({
-          jsonrpc: '2.0',
-          id,
-          result: {
-            protocolVersion: typeof params?.protocolVersion === 'string' ? params.protocolVersion : '2025-06-18',
-            capabilities: { tools: { listChanged: true } },
-            serverInfo: { name: 'mr-mail', title: APP_NAME, version: APP_VERSION },
-            instructions: AGENT_INSTRUCTIONS
-          }
-        });
-      case 'ping':
-        return send({ jsonrpc: '2.0', id, result: {} });
-      case 'tools/list':
-        await refreshTools();
-        return send({ jsonrpc: '2.0', id, result: { tools } });
-      case 'tools/call': {
-        const name = String(params?.name ?? '');
-        if (!knownTool(name)) await refreshTools();
-        if (!knownTool(name)) {
-          return send({ jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown tool: ${name}` } });
-        }
-        let result: { text?: string; error?: string };
-        try {
-          result = await callApp(name, params?.arguments ?? {});
-        } catch (e: any) {
-          result = { error: e?.message ?? String(e) };
-        }
-        return send({
-          jsonrpc: '2.0',
-          id,
-          result: { content: [{ type: 'text', text: result.error ?? result.text ?? '' }], isError: !!result.error }
-        });
-      }
-      case 'resources/list':
-        return send({ jsonrpc: '2.0', id, result: { resources: [] } });
-      case 'prompts/list':
-        return send({ jsonrpc: '2.0', id, result: { prompts: [] } });
-      default:
-        return send({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } });
-    }
-  } catch (e: any) {
-    send({ jsonrpc: '2.0', id, error: { code: -32603, message: e?.message ?? String(e) } });
-  }
+const session: McpSession = {};
+
+const deps = {
+  listChanged: true,
+  async onInitialize() {
+    await refreshTools();
+    watchTools();
+  },
+  async listTools() {
+    await refreshTools();
+    return tools;
+  },
+  async hasTool(name: string) {
+    if (!knownTool(name)) await refreshTools();
+    return knownTool(name);
+  },
+  call: (name: string, args: AgentArgs, sess: McpSession) => callApp(name, args, sess.client)
+};
+
+async function handle(req: any) {
+  const res = await handleMcp(req, deps, session);
+  if (res) send(res);
 }
 
 const rl = createInterface({ input: process.stdin });

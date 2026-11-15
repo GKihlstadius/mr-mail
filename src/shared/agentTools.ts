@@ -188,6 +188,89 @@ export const AGENT_TOOLS: AgentTool[] = [
     inputSchema: obj({ id: str('Email id.'), time: str('When, as "YYYY-MM-DD HH:MM" in local time. Omit to remove the reminder.') }, ['id'])
   },
   {
+    name: 'respond_to_invite',
+    description:
+      'Answers a calendar invitation in an email (read_email shows it): accept, tentative or decline. The answer is sent to the organizer from the invited account, and the connected calendar is updated. Only when the user has asked for it.',
+    inputSchema: obj(
+      {
+        id: str('Email id of the invitation.'),
+        response: { type: 'string', enum: ['accept', 'tentative', 'decline'], description: 'accept, tentative or decline.' },
+        comment: str('Optional short message to the organizer.')
+      },
+      ['id', 'response']
+    )
+  },
+  {
+    name: 'list_events',
+    description:
+      'Lists calendar events from the connected calendars (Google, Outlook, iCloud and others), oldest first. Without from and to: today and the next 7 days. Each event has an id for update_event and delete_event.',
+    inputSchema: obj({
+      from: str(`Start of the period: "YYYY-MM-DD" or "YYYY-MM-DD HH:MM" in local time. Default: today.`),
+      to: str('End of the period, same format. A date includes the whole day. Default: 7 days after from.'),
+      account: str('Only one account: email address or account name.'),
+      calendar: str('Only one calendar, by name.'),
+      query: str('Only events whose title, place, description or people contain this text.'),
+      limit: num('Maximum number of events, default 50, at most 300.')
+    })
+  },
+  {
+    name: 'find_free_time',
+    description: 'Finds free time in the calendar for a meeting of a given length, within working hours (default 09:00 to 17:00 local time, weekdays). Returns free slots; each slot fits the meeting at least once.',
+    inputSchema: obj(
+      {
+        duration_minutes: num('Length of the meeting in minutes.'),
+        from: str('Start of the search: "YYYY-MM-DD" or "YYYY-MM-DD HH:MM". Default: now.'),
+        to: str('End of the search, same format. Default: 7 days after from.'),
+        work_start: str('Start of the working day, "HH:MM". Default 09:00.'),
+        work_end: str('End of the working day, "HH:MM". Default 17:00.'),
+        include_weekends: bool('Also look on Saturdays and Sundays.'),
+        account: str('Only check one account: email address or account name.')
+      },
+      ['duration_minutes']
+    )
+  },
+  {
+    name: 'create_event',
+    description:
+      'Creates a calendar event in a connected calendar. With attendees, an invitation is sent to them: only do that when the user has asked for it. Without attendees nothing is sent to anyone.',
+    inputSchema: obj(
+      {
+        title: str('Title.'),
+        start: str('"YYYY-MM-DD HH:MM" in local time, or "YYYY-MM-DD" for an all day event.'),
+        end: str('"YYYY-MM-DD HH:MM". Default: one hour after start. For all day events the last day, "YYYY-MM-DD".'),
+        all_day: bool('All day event.'),
+        location: str('Place, or a meeting link.'),
+        description: str('Notes.'),
+        attendees: { type: 'array', items: { type: 'string' }, description: 'Email addresses to invite. Find them with find_contact. Sends invitations.' },
+        calendar: str('Calendar name. Default: the main calendar of the account.'),
+        account: str('Account whose calendar to use: email address or account name.')
+      },
+      ['title', 'start']
+    )
+  },
+  {
+    name: 'update_event',
+    description: 'Changes an event from list_events. Only the given fields change. If the event has attendees and the user is the organizer, they are told about the change.',
+    inputSchema: obj(
+      {
+        id: str('Event id from list_events.'),
+        title: str('New title.'),
+        start: str('New start, "YYYY-MM-DD HH:MM" or "YYYY-MM-DD". The length is kept if end is not given.'),
+        end: str('New end.'),
+        all_day: bool('All day event.'),
+        location: str('New place.'),
+        description: str('New notes.'),
+        attendees: { type: 'array', items: { type: 'string' }, description: 'The full new list of attendees. Sends invitations.' }
+      },
+      ['id']
+    )
+  },
+  {
+    name: 'delete_event',
+    description: 'Deletes an event from list_events. If the user organized it and there are attendees, they are told it is cancelled. Only when the user has asked for it.',
+    inputSchema: obj({ id: str('Event id from list_events.') }, ['id'])
+  },
+  {
     name: 'show_in_app',
     description: `Opens ${APP_NAME} and shows the email, or opens a draft for editing.`,
     inputSchema: obj({ id: str('Email or draft id.') }, ['id'])
@@ -199,6 +282,7 @@ export const AGENT_INSTRUCTIONS = [
   `Do what the user asks: if the user says "send", send with send_email or send_draft. If the user asks for a draft, or wants to read first, use draft_email so it opens in ${APP_NAME}.`,
   'Never send anything the user has not explicitly asked to be sent. Never delete anything without being asked.',
   'Read attachments with read_attachment and save them with save_attachment. Attach files from the computer with the attachments field in draft_email and send_email.',
+  'The calendar: list_events, find_free_time, create_event, update_event and delete_event. Answer invitations in emails with respond_to_invite. Invitations to other people are only sent when the user asked for it.',
   'Write in the user\'s tone (see accounts) and in the language of the conversation or of the email being answered. Use no em dashes or en dashes and no emojis. The signature and the quote are added automatically.'
 ].join('\n');
 
@@ -225,7 +309,25 @@ export const TOOL_ALIASES: Record<string, string> = {
   stada: 'clean_up',
   sok_kontakt: 'find_contact',
   paminn: 'remind',
-  visa_i_brevlada: 'show_in_app'
+  visa_i_brevlada: 'show_in_app',
+  svara_pa_inbjudan: 'respond_to_invite',
+  lista_handelser: 'list_events',
+  hitta_ledig_tid: 'find_free_time',
+  skapa_handelse: 'create_event',
+  andra_handelse: 'update_event',
+  ta_bort_handelse: 'delete_event'
 };
 
 export type AgentArgs = Record<string, unknown>;
+
+// Vem som anropar: AI-verktygets namn (från MCP initialize) och vilken brygga anropet kom genom.
+export interface CallContext {
+  client?: string;
+  via?: 'stdio' | 'http';
+}
+
+export type AgentCall = (tool: string, args: AgentArgs, ctx?: CallContext) => Promise<string>;
+
+export function isKnownTool(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(TOOL_ALIASES, name) || AGENT_TOOLS.some((t) => t.name === name);
+}

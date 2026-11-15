@@ -9,8 +9,16 @@ import { AccountDialog } from './components/AccountDialog';
 import { SignaturesDialog, SparkImportDialog } from './components/Signatures';
 import { SettingsDialog } from './components/SettingsDialog';
 import { CleanView } from './components/CleanView';
+import { CalendarView } from './components/CalendarView';
+import { localDate, todaySummary } from '../shared/calendar';
+import { addDays, localMidnight } from '../shared/ics';
 import { OutboxDialog, UndoSend } from './components/Outbox';
 import { AiTools, QuickReplies } from './components/AiAssist';
+import { ChatPanel } from './components/ChatPanel';
+import { ContactsView } from './components/ContactsView';
+import { CommandPalette, ShortcutsDialog, type PaletteItem } from './components/CommandPalette';
+import { formatAddress } from '../shared/compose';
+import { APP_NAME } from '../shared/brand';
 import { whenText } from './components/PopMenu';
 import { BulkPanel, type BulkAction } from './components/BulkPanel';
 import { isGmailAllMail } from './folderTree';
@@ -58,7 +66,7 @@ export function App() {
   const [current, setCurrent] = useState<FullMessage | null>(null);
   const [loadingBody, setLoadingBody] = useState(false);
   const [bodyError, setBodyError] = useState<string | null>(null);
-  const [accountDialog, setAccountDialog] = useState<{ accountId?: string; login?: boolean } | null>(null);
+  const [accountDialog, setAccountDialog] = useState<{ accountId?: string; login?: boolean; calendar?: boolean } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [signaturesOpen, setSignaturesOpen] = useState(false);
   const [sparkImport, setSparkImport] = useState<SparkExport | null>(null);
@@ -78,10 +86,18 @@ export function App() {
   const moreInCache = useRef(false);
   const [thread, setThread] = useState<MessageSummary[]>([]);
   const [cleaning, setCleaning] = useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [contactsOpen, setContactsOpen] = useState(false);
+  const [todayText, setTodayText] = useState('');
   const [changeTick, setChangeTick] = useState(0);
   const [outbox, setOutbox] = useState<OutboxInfo[]>([]);
   const [outboxOpen, setOutboxOpen] = useState(false);
   const [update, setUpdate] = useState<{ version: string } | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [recent, setRecent] = useState<MessageSummary[]>([]);
+  const [focusEvent, setFocusEvent] = useState<string | null>(null);
 
   const search = useMemo(() => parseSearch(query, filters), [query, JSON.stringify(filters)]);
   const searching = !isEmptyQuery(search);
@@ -97,6 +113,26 @@ export function App() {
     setToast({ text, action });
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), action ? 8000 : 5000);
+  }, []);
+
+  // Dagens möten för raden under Kalender i sidopanelen.
+  useEffect(() => {
+    let live = true;
+    const load = () => {
+      const today = localDate(Date.now());
+      void api
+        .calendarEvents(localMidnight(today), localMidnight(addDays(today, 1)))
+        .then((list) => live && setTodayText(todaySummary(list, Date.now()).text))
+        .catch(() => undefined);
+    };
+    load();
+    const off = api.on('calendar', load);
+    const timer = setInterval(load, 60_000);
+    return () => {
+      live = false;
+      off();
+      clearInterval(timer);
+    };
   }, []);
 
   const refreshState = useCallback(async () => {
@@ -245,6 +281,8 @@ export function App() {
     void api.updateCheck().then(setUpdate).catch(() => undefined);
     const offOpen = api.on('open-message', (id: string) => {
       setCleaning(false);
+      setCalendarOpen(false);
+      setContactsOpen(false);
       setQuery('');
       setSelection({ kind: 'unified', role: 'inbox' });
       setSelectedId(id);
@@ -558,7 +596,22 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (cleaning && !(e.ctrlKey && e.key.toLowerCase() === 'n')) return;
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+        return;
+      }
+      if (e.ctrlKey && !e.altKey && (e.key === '/' || e.code === 'Slash')) {
+        e.preventDefault();
+        setShortcutsOpen(true);
+        return;
+      }
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        setChatOpen((o) => !o);
+        return;
+      }
+      if ((cleaning || calendarOpen || contactsOpen) && !(e.ctrlKey && e.key.toLowerCase() === 'n')) return;
       const target = e.target as HTMLElement;
       const typing = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
       if (e.ctrlKey && e.key.toLowerCase() === 'n') {
@@ -646,7 +699,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [shown, selectedId, selectedSummary, act, newMessage, accountDialog, settingsOpen, state, searching, printMsg, cleaning, checked, bulk, undoMove]);
+  }, [shown, selectedId, selectedSummary, act, newMessage, accountDialog, settingsOpen, state, searching, printMsg, cleaning, calendarOpen, contactsOpen, checked, bulk, undoMove]);
 
   // Motorvalet gäller hela appen och sparas direkt.
   const setEngine = useCallback(
@@ -661,24 +714,177 @@ export function App() {
     [refreshState, showToast]
   );
 
+  // Länkar i chatten öppnar mejlet i läsvyn eller händelsen i kalendern.
+  const openMail = useCallback((id: string) => {
+    setCleaning(false);
+    setCalendarOpen(false);
+    setContactsOpen(false);
+    setQuery('');
+    setSelection({ kind: 'unified', role: 'inbox' });
+    setSelectedId(id);
+  }, []);
+  const openEvent = useCallback((id: string) => {
+    setCleaning(false);
+    setContactsOpen(false);
+    setSelectedId(null);
+    setCalendarOpen(true);
+    setFocusEvent(id);
+  }, []);
+
+  // Senaste mejlen i inkorgarna för kommandopaletten, hämtas när den öppnas.
+  useEffect(() => {
+    if (!paletteOpen) return;
+    void api
+      .list({ kind: 'unified', role: 'inbox' }, 200)
+      .then((r) => setRecent(r.items))
+      .catch(() => undefined);
+  }, [paletteOpen]);
+
   if (!state) return <div className="app loading" />;
+
+  const selectMailbox = (sel: MailboxSelection) => {
+    setCleaning(false);
+    setCalendarOpen(false);
+    setContactsOpen(false);
+    setQuery('');
+    setSelection(sel);
+    setSelectedId(null);
+    if (sel.kind === 'folder') void api.syncFolder(sel.accountId, sel.path).catch(() => undefined);
+  };
+  const showCalendar = () => {
+    setCleaning(false);
+    setContactsOpen(false);
+    setCalendarOpen(true);
+    setSelectedId(null);
+  };
+  const showContacts = () => {
+    setCleaning(false);
+    setCalendarOpen(false);
+    setContactsOpen(true);
+    setSelectedId(null);
+  };
+  const showClean = () => {
+    setCalendarOpen(false);
+    setContactsOpen(false);
+    setCleaning(true);
+    setSelectedId(null);
+  };
+
+  // Allt som kommandopaletten kan göra: åtgärder, platser och senaste mejlen.
+  const paletteItems = (): PaletteItem[] => {
+    const acc = (id: string) => state.accounts.find((a) => a.id === id)?.name ?? '';
+    const multi = state.accounts.length > 1;
+    const actions: PaletteItem[] = [
+      { id: 'a-new', group: 'action', label: t('Nytt mejl'), shortcut: 'Ctrl+N', keywords: 'skriv compose new', icon: I.Compose, run: () => newMessage() },
+      {
+        id: 'a-search',
+        group: 'action',
+        label: t('Sök'),
+        shortcut: 'Ctrl+F',
+        keywords: 'search hitta',
+        icon: I.Search,
+        run: () => {
+          if (cleaning || calendarOpen || contactsOpen) selectMailbox(selection);
+          setTimeout(() => document.getElementById('search')?.focus(), 30);
+        }
+      },
+      { id: 'a-ask', group: 'action', label: t('Fråga {app}', { app: APP_NAME }), shortcut: 'Ctrl+J', keywords: 'chatt ai chat', icon: I.Sparkle, run: () => setChatOpen(true) },
+      {
+        id: 'a-sync',
+        group: 'action',
+        label: t('Synka nu'),
+        keywords: 'hämta uppdatera sync refresh',
+        icon: I.Refresh,
+        run: () =>
+          void api
+            .reconnect()
+            .then(() => showToast(t('Synkar alla konton.')))
+            .catch((e) => showToast(e.message))
+      },
+      {
+        id: 'a-theme',
+        group: 'action',
+        label: t('Byt tema'),
+        hint: state.dark ? t('Till ljust') : t('Till mörkt'),
+        keywords: 'mörkt ljust dark light theme',
+        icon: I.Gear,
+        run: () =>
+          void api
+            .saveSettings({ theme: state.dark ? 'light' : 'dark' })
+            .then(() => refreshState())
+            .catch((e) => showToast(e.message))
+      },
+      { id: 'a-settings', group: 'action', label: t('Inställningar'), keywords: 'settings', icon: I.Gear, run: () => setSettingsOpen(true) },
+      { id: 'a-keys', group: 'action', label: t('Kortkommandon'), shortcut: 'Ctrl+/', keywords: 'shortcuts tangenter', icon: I.Stack, run: () => setShortcutsOpen(true) }
+    ];
+    const places: PaletteItem[] = [
+      { id: 'p-inbox', group: 'place', label: t('Gå till {place}', { place: t('Inkorg') }), keywords: 'inbox alla inkorgar', icon: I.Inbox, run: () => selectMailbox({ kind: 'unified', role: 'inbox' }) },
+      { id: 'p-calendar', group: 'place', label: t('Gå till {place}', { place: t('Kalender') }), keywords: 'calendar möten', icon: I.Calendar, run: showCalendar },
+      { id: 'p-contacts', group: 'place', label: t('Gå till {place}', { place: t('Kontakter') }), keywords: 'contacts personer', icon: I.People, run: showContacts },
+      { id: 'p-clean', group: 'place', label: t('Gå till {place}', { place: t('Städa') }), keywords: 'clean up rensa', icon: I.Broom, run: showClean },
+      { id: 'p-reminders', group: 'place', label: t('Gå till {place}', { place: t('Påminnelser') }), keywords: 'reminders snooze', icon: I.Clock, run: () => selectMailbox({ kind: 'reminders' }) },
+      ...state.folders
+        .filter((f) => !isGmailAllMail(f.role, f.path))
+        .map(
+          (f): PaletteItem => ({
+            id: `f-${f.accountId}-${f.path}`,
+            group: 'place',
+            label: f.role === 'other' ? f.name : roleTitle(f.role),
+            hint: multi || f.role !== 'other' ? acc(f.accountId) : undefined,
+            keywords: f.path,
+            icon: f.role === 'inbox' ? I.Inbox : f.role === 'sent' ? I.Send : f.role === 'drafts' ? I.Draft : f.role === 'trash' ? I.Trash : f.role === 'archive' ? I.Archive : I.Folder,
+            run: () => selectMailbox({ kind: 'folder', accountId: f.accountId, role: f.role, path: f.path })
+          })
+        )
+    ];
+    const seen = new Set<string>();
+    const mails: PaletteItem[] = [...recent, ...messages]
+      .filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)))
+      .slice(0, 300)
+      .map((m) => ({ id: `m-${m.id}`, group: 'mail', label: m.subject || t('(inget ämne)'), hint: m.from.name || m.from.address, icon: I.Envelope, run: () => openMail(m.id) }));
+    return [...actions, ...places, ...mails];
+  };
+  const paletteSearch = async (q: string): Promise<PaletteItem[]> =>
+    (await api.contacts(q)).slice(0, 6).map((c) => ({
+      id: `c-${c.address}`,
+      group: 'contact',
+      label: t('Skriv till {name}', { name: c.name || c.address }),
+      hint: c.name ? c.address : undefined,
+      keywords: `${c.name} ${c.address}`,
+      icon: I.People,
+      run: () => newMessage(formatAddress(c))
+    }));
   const readerMsg = current && current.id === selectedId ? current : null;
   const readerIsDraft = !!readerMsg && state.folders.find((f) => f.accountId === readerMsg.accountId && f.path === readerMsg.folder)?.role === 'drafts';
 
   return (
-    <div className={cleaning ? 'app cleaning' : 'app'}>
+    <div className={cleaning || calendarOpen || contactsOpen ? 'app cleaning' : 'app'}>
       <Sidebar
         state={state}
-        selection={query || cleaning ? null : selection}
+        selection={query || cleaning || calendarOpen || contactsOpen ? null : selection}
         cleaning={cleaning}
+        calendarActive={calendarOpen}
+        contactsActive={contactsOpen}
+        onContacts={showContacts}
+        todayText={todayText}
+        onCalendar={() => {
+          setCleaning(false);
+          setContactsOpen(false);
+          setCalendarOpen(true);
+          setSelectedId(null);
+        }}
         laterCount={outbox.filter((o) => o.kind === 'later').length}
         onOutbox={() => setOutboxOpen(true)}
         onClean={() => {
+          setCalendarOpen(false);
+          setContactsOpen(false);
           setCleaning(true);
           setSelectedId(null);
         }}
         onSelect={(sel) => {
           setCleaning(false);
+          setCalendarOpen(false);
+          setContactsOpen(false);
           setQuery('');
           setSelection(sel);
           setSelectedId(null);
@@ -693,7 +899,18 @@ export function App() {
           else void moveTo(messageId, path);
         }}
       />
-      {cleaning ? (
+      {contactsOpen ? (
+        <ContactsView accounts={state.accounts} onToast={showToast} onOpenMail={openMail} onCompose={(to) => newMessage(to)} onAsk={() => setChatOpen((o) => !o)} />
+      ) : calendarOpen ? (
+        <CalendarView
+          accounts={state.accounts}
+          onToast={showToast}
+          onLogin={(id) => setAccountDialog({ accountId: id, login: true, calendar: true })}
+          focusEvent={focusEvent}
+          onFocused={() => setFocusEvent(null)}
+          onAsk={() => setChatOpen((o) => !o)}
+        />
+      ) : cleaning ? (
         <CleanView
           accounts={state.accounts}
           version={changeTick}
@@ -732,6 +949,8 @@ export function App() {
           if (state.folders.find((f) => f.accountId === m.accountId && f.path === m.folder)?.role === 'drafts') void act('editDraft', m);
         }}
         onCompose={() => newMessage()}
+        onAsk={() => setChatOpen((o) => !o)}
+        askOpen={chatOpen}
         onRefresh={() => api.reconnect()}
         onMove={(id, path) => void moveTo(id, path)}
         empty={
@@ -762,6 +981,7 @@ export function App() {
         onMove={(id, path) => void moveTo(id, path)}
         onMailto={newMessage}
         onError={showToast}
+        onToast={showToast}
         reminders={state.reminders}
         onRemind={(id, kind, due) => void remindMsg(id, kind, due)}
         onClearRemind={(id) => void api.remindClear(id).catch((e) => showToast(e.message))}
@@ -788,6 +1008,7 @@ export function App() {
           accounts={state.accounts}
           accountId={accountDialog.accountId}
           login={accountDialog.login}
+          calendar={accountDialog.calendar}
           status={state.statuses.find((s) => s.id === accountDialog.accountId)}
           signatures={state.settings.signatures}
           onEditSignatures={() => setSignaturesOpen(true)}
@@ -841,6 +1062,9 @@ export function App() {
       )}
       {outboxOpen && <OutboxDialog items={outbox.filter((o) => o.kind === 'later')} accounts={state.accounts} onError={showToast} onClose={() => setOutboxOpen(false)} />}
       <UndoSend items={outbox.filter((o) => o.kind === 'undo')} onError={showToast} />
+      {paletteOpen && <CommandPalette items={paletteItems()} search={paletteSearch} onClose={() => setPaletteOpen(false)} />}
+      {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
+      <ChatPanel open={chatOpen} engine={state.settings.aiEngine} onClose={() => setChatOpen(false)} onOpenMail={openMail} onOpenEvent={openEvent} />
       {update && (
         <div className="update-banner" role="status">
           <span>{t('Version {version} finns.', { version: update.version })}</span>

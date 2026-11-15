@@ -46,6 +46,11 @@ If Mr Mail is not running, it is started hidden in the system tray on the first 
 | `find_contact` | Finds addresses among the people you have emailed |
 | `remind` | Hides an email and brings it back as unread at a given time |
 | `show_in_app` | Shows the email, or opens a draft, in the app |
+| `respond_to_invite` | Answers a calendar invitation in an email: accept, tentative or decline |
+| `list_events` | Calendar events in a period, from all connected calendars |
+| `find_free_time` | Free slots for a meeting of a given length, within working hours |
+| `create_event` | Creates an event; with attendees it sends invitations |
+| `update_event`, `delete_event` | Changes or deletes an event from `list_events` |
 
 Folders can be given as `inbox`, `sent`, `drafts`, `archive`, `trash`, `junk` or the name of
 a custom folder. Dates and times are written `YYYY-MM-DD HH:MM` in local time.
@@ -54,10 +59,32 @@ Tool results use English field names, for example `id`, `date`, `from`, `subject
 `account`, `folder`, `unread`, `flagged`, `answered`, `attachments`, `thread_length` and
 `snippet`.
 
+## Calendar
+
+The calendar tools use the calendars connected in Mr Mail: Google and Outlook through their
+sign in, iCloud, Fastmail and other CalDAV servers with the account password. See
+[oauth.md](oauth.md#calendar). Events are cached for the past week and the next 60 days, so
+`list_events` and `find_free_time` answer fast; other periods are fetched from the server.
+
+- Times are `YYYY-MM-DD HH:MM` in local time, or `YYYY-MM-DD` for all day events. For all day
+  events `end` is the last day.
+- `find_free_time` looks within working hours, 09:00 to 17:00 on weekdays by default
+  (`work_start`, `work_end`, `include_weekends`). All day events, free time and declined
+  meetings do not count as busy.
+- `read_email` shows a short summary of a calendar invitation, and `respond_to_invite` sends
+  the answer to the organizer from the invited account and updates the calendar.
+
+Permissions follow the settings under **Control with AI tools**: `respond_to_invite`, and
+`create_event` or `update_event` that send invitations or changes to attendees, count as
+sending. `delete_event` counts as deleting, and also as sending when attendees are told the
+meeting is cancelled. Creating an event without attendees only needs the user's request.
+
 ## Older Swedish names
 
 Earlier versions used Swedish tool and argument names (`lista_mejl`, `skriv_utkast`,
-`konto`, `mapp`, `till`, `amne` and so on). They still work when called, so existing agent
+`konto`, `mapp`, `till`, `amne` and so on). The calendar tools also have Swedish names:
+`svara_pa_inbjudan`, `lista_handelser`, `hitta_ledig_tid`, `skapa_handelse`, `andra_handelse`
+and `ta_bort_handelse`. They still work when called, so existing agent
 setups keep running, but the tool list only shows the English names. Swedish folder names
 (`inkorg`, `skickat`, `utkast`, `arkiv`, `papperskorg`) and category names (`nyhetsbrev`,
 `aviseringar`, `kvitton`, `sociala`, `personligt`) are accepted as well. Replies are in

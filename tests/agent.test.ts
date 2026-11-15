@@ -11,6 +11,8 @@ import { outgoingHtml } from '../src/shared/richtext';
 import { startAgentServer } from '../src/main/agentServer';
 import { AGENT_INSTRUCTIONS, AGENT_TOOLS } from '../src/shared/agentTools';
 import type { AccountConfig, FullMessage, MessageSummary, OutgoingMessage } from '../src/shared/types';
+import { findFreeSlots, type CalendarEvent, type EventInput } from '../src/shared/calendar';
+import { permissionKinds, describeCall } from '../src/main/agentGuard';
 
 const acc = (id: string, email: string, name: string): AccountConfig => ({
   id,
@@ -42,6 +44,7 @@ const karin: MessageSummary = {
   hasAttachments: false,
   messageId: '<k1@ex.se>'
 };
+const invite: MessageSummary = { ...karin, id: 'inv1', uid: 5, subject: 'Inbjudan: Demo', messageId: '<inv1@ex.se>' };
 const draft: MessageSummary = { ...karin, id: 'd1', folder: 'Drafts', uid: 9, subject: 'Re: Demo', from: { name: 'Alex', address: 'alex@nordljus.se' }, to: [{ name: 'Karin Lund', address: 'karin@ex.se' }], cc: [], messageId: '<d1@x>' };
 
 // En minimal zip-fil, som en docx.
@@ -88,13 +91,69 @@ const FILES = [
   { filename: 'bild.png', contentType: 'image/png', content: Buffer.from([137, 80, 78, 71]) }
 ];
 
+// Låtsad kalendervärd: en kalender i minnet, som tjänsten i appen men utan leverantör.
+function fakeCalendar() {
+  const events: CalendarEvent[] = [];
+  const calls: string[] = [];
+  const mk = (input: EventInput, id: string): CalendarEvent => ({
+    id,
+    accountId: 'nordljus',
+    calendarId: 'jobb',
+    remoteId: id,
+    uid: id,
+    title: input.title,
+    location: input.location ?? '',
+    description: input.description ?? '',
+    attendees: (input.attendees ?? []).map((a) => ({ name: a.name ?? '', email: a.email })),
+    status: 'confirmed',
+    busy: true,
+    recurring: false,
+    isOrganizer: true,
+    start: input.start,
+    end: input.end,
+    allDay: input.allDay,
+    startDate: input.startDate,
+    endDate: input.endDate
+  });
+  events.push(mk({ title: 'Demo med Karin', start: new Date(2026, 10, 17, 14).getTime(), end: new Date(2026, 10, 17, 15).getTime(), allDay: false, location: 'Teams', attendees: [{ email: 'karin@ex.se', name: 'Karin' }] }, 'e1'));
+  events.push(mk({ title: 'Lunch', start: new Date(2026, 10, 17, 12).getTime(), end: new Date(2026, 10, 17, 13).getTime(), allDay: false }, 'e2'));
+  const host = {
+    calendars: () => [{ accountId: 'nordljus', id: 'jobb', name: 'Jobb', primary: true, readOnly: false }],
+    calendarEvents: async (from: number, to: number, f: { query?: string }) =>
+      events.filter((e) => e.end > from && e.start < to && (!f.query || e.title.toLowerCase().includes(f.query.toLowerCase()))).sort((a, b) => a.start - b.start),
+    freeSlots: async (o: { from: number; to: number; durationMin: number; workStart?: string; workEnd?: string; weekends?: boolean }) => (calls.push(`free:${o.durationMin}:${o.workStart}-${o.workEnd}`), findFreeSlots(events, o)),
+    createEvent: async (input: EventInput, calendar?: string) => {
+      calls.push(`create:${calendar ?? ''}`);
+      const ev = mk(input, `n${events.length}`);
+      events.push(ev);
+      return ev;
+    },
+    updateEvent: async (id: string, patch: Partial<EventInput>) => {
+      const i = events.findIndex((e) => e.id === id);
+      calls.push(`update:${id}:${Object.keys(patch).sort().join(',')}`);
+      events[i] = { ...events[i], ...patch, attendees: patch.attendees ? patch.attendees.map((a) => ({ name: a.name ?? '', email: a.email })) : events[i].attendees };
+      return events[i];
+    },
+    deleteEvent: async (id: string) => {
+      const ev = events.find((e) => e.id === id)!;
+      events.splice(events.indexOf(ev), 1);
+      calls.push(`delete:${id}`);
+      return ev;
+    },
+    getEvent: (id: string) => events.find((e) => e.id === id) ?? null
+  };
+  return { host, events, calls };
+}
+
 function fakeHost() {
+  const cal = fakeCalendar();
   const sent: OutgoingMessage[] = [];
   const drafts: OutgoingMessage[] = [];
   const opened: string[] = [];
   const moved: [string, string][] = [];
   const cleaned: string[] = [];
-  const msgs = new Map([karin, draft].map((m) => [m.id, m]));
+  const answers: string[] = [];
+  const msgs = new Map([karin, draft, invite].map((m) => [m.id, m]));
   const full = (id: string): FullMessage => {
     const m = msgs.get(id)!;
     return {
@@ -111,7 +170,31 @@ function fakeHost() {
         references: [],
         inReplyTo: id === 'd1' ? '<k1@ex.se>' : null,
         replyTo: [],
-        hasRemoteImages: false
+        hasRemoteImages: false,
+        invite:
+          id === 'inv1'
+            ? {
+                method: 'REQUEST',
+                count: 1,
+                ics: null,
+                event: {
+                  uid: 'u1',
+                  sequence: 0,
+                  summary: 'Demo av Nordljus',
+                  location: 'Rum 3',
+                  description: '',
+                  url: '',
+                  status: '',
+                  transparent: false,
+                  start: new Date(2026, 10, 17, 14).getTime(),
+                  end: new Date(2026, 10, 17, 15).getTime(),
+                  allDay: false,
+                  organizer: { name: 'Karin Lund', email: 'karin@ex.se' },
+                  attendees: [{ name: 'Alex', email: 'alex@nordljus.se', partstat: 'NEEDS-ACTION', rsvp: true, role: 'REQ-PARTICIPANT' }],
+                  joinUrl: 'https://meet.google.com/abc-defg-hij'
+                }
+              }
+            : null
       }
     };
   };
@@ -155,14 +238,93 @@ function fakeHost() {
     sendLater: async (m, at) => void sent.push({ ...m, followUpDays: at }),
     createFolder: async (_a, name, parent) => (parent ? `${parent}/${name}` : name),
     downloadsDir: () => dirs.downloads,
-    tempDir: () => dirs.temp
+    tempDir: () => dirs.temp,
+    inviteAnswer: (id) => (answers.some((a) => a.startsWith(`${id}:`)) ? 'accept' : null),
+    respondInvite: async (id, response, comment) => (answers.push(`${id}:${response}:${comment ?? ''}`), { calendar: true }),
+    ...cal.host
   };
-  return { host, sent, drafts, opened, moved, cleaned };
+  return { host, sent, drafts, opened, moved, cleaned, answers, cal };
 }
 
 const dirs = { downloads: '', temp: '' };
 
+describe('kalenderverktygen', () => {
+  it('listar händelser och hittar ledig tid', async () => {
+    const f = fakeHost();
+    const call = createAgent(f.host);
+    const list = JSON.parse(await call('list_events', { from: '2026-11-17', to: '2026-11-17' }));
+    expect(list.map((e: any) => [e.title, e.start, e.end])).toEqual([
+      ['Lunch', '2026-11-17 12:00', '2026-11-17 13:00'],
+      ['Demo med Karin', '2026-11-17 14:00', '2026-11-17 15:00']
+    ]);
+    expect(list[1]).toMatchObject({ id: 'e1', location: 'Teams', attendees: ['Karin <karin@ex.se>'], calendar: 'Jobb', account: 'alex@nordljus.se' });
+    expect(JSON.parse(await call('lista_handelser', { fran: '2026-11-17', till: '2026-11-18', fraga: 'demo' }))).toHaveLength(1);
+    const free = JSON.parse(await call('find_free_time', { duration_minutes: 60, from: '2026-11-17', to: '2026-11-17' }));
+    expect(free).toEqual([
+      { start: '2026-11-17 09:00', end: '2026-11-17 12:00', minutes: 180 },
+      { start: '2026-11-17 13:00', end: '2026-11-17 14:00', minutes: 60 },
+      { start: '2026-11-17 15:00', end: '2026-11-17 17:00', minutes: 120 }
+    ]);
+    expect(f.cal.calls).toContain('free:60:09:00-17:00');
+    await expect(call('find_free_time', {})).rejects.toThrow(/duration_minutes/);
+    await expect(call('list_events', { from: '17 nov' })).rejects.toThrow(/YYYY-MM-DD/);
+  });
+
+  it('skapar, ändrar och tar bort händelser', async () => {
+    const f = fakeHost();
+    const call = createAgent(f.host);
+    const created = await call('create_event', { title: 'Fokus', start: '2026-11-18 09:00' });
+    expect(created).toMatch(/^Created "Fokus" 2026-11-18 09:00 to 10:00\. Id: n2$/);
+    expect(f.cal.events[2]).toMatchObject({ allDay: false, start: new Date(2026, 10, 18, 9).getTime(), end: new Date(2026, 10, 18, 10).getTime() });
+    expect(await call('skapa_handelse', { titel: 'Semester', start: '2026-12-21', slut: '2026-12-23' })).toContain('2026-12-21 to 2026-12-23, all day');
+    expect(f.cal.events[3]).toMatchObject({ allDay: true, startDate: '2026-12-21', endDate: '2026-12-24' });
+    const inv = await call('create_event', { title: 'Demo', start: '2026-11-19 13:00', end: '2026-11-19 13:30', attendees: ['Karin <karin@ex.se>', 'erik@ex.se'], calendar: 'Jobb' });
+    expect(inv).toContain('invitation sent to karin@ex.se, erik@ex.se');
+    expect(f.cal.calls).toContain('create:Jobb');
+    await expect(call('create_event', { title: 'X', start: '2026-11-19 13:00', attendees: ['inte en adress'] })).rejects.toThrow(/Not an email address/);
+    await expect(call('create_event', { title: 'X', start: '2026-11-19 13:00', end: '2026-11-19 12:00' })).rejects.toThrow(/after the start/);
+    // Ny start behåller längden.
+    expect(await call('update_event', { id: 'e1', start: '2026-11-17 16:00' })).toContain('2026-11-17 16:00 to 17:00. The attendees are told about the change');
+    expect(f.cal.calls).toContain('update:e1:allDay,end,start');
+    await expect(call('update_event', { id: 'e1' })).rejects.toThrow(/Nothing to change/);
+    await expect(call('update_event', { id: 'finns-inte', title: 'x' })).rejects.toThrow(/does not exist/);
+    expect(await call('delete_event', { id: 'e1' })).toContain('The attendees are told it is cancelled');
+    expect(await call('ta_bort_handelse', { id: 'e2' })).toContain('Deleted "Lunch"');
+  });
+
+  it('inbjudningar kräver lov att skicka, borttagning lov att radera', () => {
+    const events = (id: string) => (id === 'e1' ? { title: 'Demo', attendees: 2, isOrganizer: true, start: 0 } : id === 'e2' ? { title: 'Lunch', attendees: 0, isOrganizer: true, start: 0 } : null);
+    expect(permissionKinds('create_event', { title: 'x', start: '2026-11-18' })).toEqual([]);
+    expect(permissionKinds('create_event', { title: 'x', attendees: ['k@ex.se'] })).toEqual(['send']);
+    expect(permissionKinds('skapa_handelse', { titel: 'x', deltagare: 'k@ex.se' })).toEqual(['send']);
+    expect(permissionKinds('update_event', { id: 'e1', title: 'y' }, events)).toEqual(['send']);
+    expect(permissionKinds('update_event', { id: 'e2', title: 'y' }, events)).toEqual([]);
+    expect(permissionKinds('delete_event', { id: 'e1' }, events)).toEqual(['delete', 'send']);
+    expect(permissionKinds('delete_event', { id: 'e2' }, events)).toEqual(['delete']);
+    expect(permissionKinds('respond_to_invite', { id: 'm1', response: 'accept' })).toEqual(['send']);
+    expect(describeCall('create_event', { title: 'Demo', start: '2026-11-19 13:00', attendees: ['k@ex.se'] }, 'Claude').message).toBe('Claude vill skapa händelsen "Demo" och skicka en inbjudan till k@ex.se.');
+    expect(describeCall('delete_event', { id: 'e1' }, 'Claude', undefined, events).detail).toContain('inställt');
+  });
+});
+
 describe('AI-verktygen', () => {
+  it('visar inbjudan i read_email och svarar med respond_to_invite', async () => {
+    const f = fakeHost();
+    const call = createAgent(f.host);
+    const text = await call('read_email', { id: 'inv1' });
+    expect(text).toContain('Meeting invitation: Demo av Nordljus');
+    expect(text).toContain('When: 2026-11-17 14:00 to 2026-11-17 15:00');
+    expect(text).toContain('Organizer: Karin Lund <karin@ex.se>');
+    expect(text).toContain('Join link: https://meet.google.com/abc-defg-hij');
+    expect(text).toContain('Not answered yet');
+    expect(await call('respond_to_invite', { id: 'inv1', response: 'accept', comment: 'Ses då' })).toContain('Accepted "Demo av Nordljus"');
+    expect(f.answers).toEqual(['inv1:accept:Ses då']);
+    expect(await call('read_email', { id: 'inv1' })).toContain('The user has answered: accept');
+    expect(await call('svara_pa_inbjudan', { id: 'inv1', svar: 'nej' })).toContain('Declined');
+    await expect(call('respond_to_invite', { id: 'm1', response: 'accept' })).rejects.toThrow(/no calendar invitation/);
+    await expect(call('respond_to_invite', { id: 'inv1', response: 'kanske inte' })).rejects.toThrow(/accept, tentative or decline/);
+  });
+
   beforeAll(() => {
     const root = mkdtempSync(join(tmpdir(), 'agent-bilagor-'));
     dirs.downloads = join(root, 'Hämtade filer');
@@ -401,7 +563,7 @@ describe('AI-verktygen', () => {
     expect(names).toEqual(
       expect.arrayContaining(['accounts', 'list_emails', 'search_emails', 'read_email', 'read_attachment', 'save_attachment', 'read_thread', 'draft_email', 'edit_draft', 'send_email', 'send_draft', 'archive', 'trash', 'mark', 'move', 'create_folder', 'senders', 'unsubscribe', 'clean_up', 'find_contact', 'remind', 'show_in_app'])
     );
-    expect(names).toHaveLength(22);
+    expect(names).toHaveLength(28);
     expect(JSON.stringify(AGENT_TOOLS) + AGENT_INSTRUCTIONS).not.toMatch(/[\u2013\u2014]/);
   });
 

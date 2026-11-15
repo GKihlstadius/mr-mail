@@ -1,6 +1,7 @@
 name: Release
 
-# Builds the installer and attaches it to a GitHub release when a tag like v0.6.0 is pushed.
+# Builds the installer and the Claude Desktop extension (.mcpb) and attaches them to a GitHub
+# release when a tag like v0.6.0 is pushed.
 on:
   push:
     tags: ['v*']
@@ -29,5 +30,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh release create "$GITHUB_REF_NAME" release/MrMail-Setup-*.exe --title "Mr Mail ${GITHUB_REF_NAME#v}" --generate-notes || \
-          gh release upload "$GITHUB_REF_NAME" release/MrMail-Setup-*.exe --clobber
+          gh release create "$GITHUB_REF_NAME" release/MrMail-Setup-*.exe release/MrMail-*.mcpb --title "Mr Mail ${GITHUB_REF_NAME#v}" --generate-notes || \
+          gh release upload "$GITHUB_REF_NAME" release/MrMail-Setup-*.exe release/MrMail-*.mcpb --clobber

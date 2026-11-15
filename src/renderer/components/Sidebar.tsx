@@ -50,9 +50,14 @@ interface Props {
   onClean(): void;
   laterCount: number;
   onOutbox(): void;
+  calendarActive?: boolean;
+  todayText?: string;
+  onCalendar?(): void;
+  contactsActive?: boolean;
+  onContacts?(): void;
 }
 
-export function Sidebar({ state, selection, onSelect, onAddAccount, onEditAccount, onSettings, onDropMessage, cleaning, onClean, laterCount, onOutbox }: Props) {
+export function Sidebar({ state, selection, onSelect, onAddAccount, onEditAccount, onSettings, onDropMessage, cleaning, onClean, laterCount, onOutbox, calendarActive, todayText, onCalendar, contactsActive, onContacts }: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [dragOver, setDragOver] = useState<string | null>(null);
   const totalUnread = state.statuses.reduce((n, s) => n + s.unread, 0);
@@ -122,6 +127,21 @@ export function Sidebar({ state, selection, onSelect, onAddAccount, onEditAccoun
             <I.Send size={17} />
             <span className="nav-label">{t('Skickas senare')}</span>
             <span className="count">{laterCount}</span>
+          </button>
+        )}
+        {onCalendar && (
+          <button className={cx('nav-item', 'nav-calendar', calendarActive && 'active', todayText && 'has-sub')} onClick={onCalendar} id="nav-calendar" title={todayText || undefined}>
+            <I.Calendar size={17} />
+            <span className="nav-label">
+              {t('Kalender')}
+              {todayText && <span className="nav-sub">{todayText}</span>}
+            </span>
+          </button>
+        )}
+        {onContacts && (
+          <button className={cx('nav-item', contactsActive && 'active')} onClick={onContacts} id="nav-contacts">
+            <I.People size={17} />
+            <span className="nav-label">{t('Kontakter')}</span>
           </button>
         )}
         <button className={cx('nav-item', cleaning && 'active')} onClick={onClean} id="nav-clean">

@@ -1,4 +1,5 @@
 import type { CleanRule } from './cleanup';
+import type { IcsEvent } from './ics';
 
 export type Security = 'ssl' | 'starttls' | 'none';
 
@@ -27,6 +28,10 @@ export interface AccountConfig {
   auth?: 'password' | 'oauth';
   // Aviseringar för nya mejl i just det här kontot.
   notify?: boolean;
+  // Visa kontots kalender. Saknas betyder på när kontot har en kalender.
+  calendar?: boolean;
+  // Egen CalDAV-adress, när den inte hittas automatiskt.
+  caldavUrl?: string;
 }
 
 export type ProviderId = 'gmail' | 'icloud' | 'outlook' | 'simply' | 'manual';
@@ -136,7 +141,20 @@ export interface MessageBody {
   inReplyTo: string | null;
   replyTo: Address[];
   hasRemoteImages: boolean;
+  // Kalenderinbjudan i mejlet (text/calendar eller .ics). null om ingen finns; saknas i äldre cache.
+  invite?: Invitation | null;
 }
+
+export interface Invitation {
+  method: string;
+  event: IcsEvent;
+  // Antal händelser i filen, till exempel undantag i en serie.
+  count: number;
+  // Kalenderfilen som den kom, när den är rimligt stor.
+  ics: string | null;
+}
+
+export type InviteResponse = 'accept' | 'tentative' | 'decline';
 
 export interface FullMessage extends MessageSummary {
   body: MessageBody;
@@ -228,6 +246,21 @@ export interface Contact {
   count: number;
 }
 
+// En rad i Kontakter: antal mejl åt båda hållen och senaste kontakten.
+export interface ContactRow extends Contact {
+  last: number;
+}
+
+export interface ContactDetail {
+  address: string;
+  name: string;
+  received: number;
+  sent: number;
+  last: number;
+  recent: MessageSummary[];
+  events: import('./calendar').CalendarEvent[];
+}
+
 export interface Signature {
   id: string;
   name: string;
@@ -240,6 +273,25 @@ export type AiEngine = 'spark' | 'local' | 'claude' | 'openai' | 'codex';
 export type AiTask = 'reply' | 'summary' | 'todo' | 'quick';
 
 export type ThemeChoice = 'system' | 'light' | 'dark';
+
+export type AgentPermission = 'allow' | 'ask' | 'never';
+
+export interface AgentPermissions {
+  send: AgentPermission;
+  delete: AgentPermission;
+  unsubscribe: AgentPermission;
+}
+
+// Ett anrop från ett AI-verktyg, för listan Aktivitet i inställningarna.
+export interface AgentLogEntry {
+  id: number;
+  at: number;
+  tool: string;
+  summary: string;
+  ok: boolean;
+  error: string;
+  client: string;
+}
 
 export interface Settings {
   // Ljust, mörkt eller som Windows.
@@ -271,6 +323,12 @@ export interface Settings {
   sparkOffered: boolean;
   // AI-verktyg (Claude Code, Zed) får läsa, skriva och skicka via MCP.
   agentTools: boolean;
+  // MCP över HTTP på 127.0.0.1 för verktyg som bara tar en adress. Nyckeln skapas en gång.
+  agentHttp: boolean;
+  agentHttpPort: number;
+  agentHttpToken: string;
+  // Vad AI-verktygen får göra utan att fråga: skicka, radera och avregistrera eller städa.
+  agentPermissions: AgentPermissions;
   // Städa: regler per avsändare, avsändare som ska behållas och när avregistrering gjordes.
   cleanRules: CleanRule[];
   cleanKeep: string[];
@@ -322,6 +380,8 @@ export interface AiResult {
 export interface AccountInput {
   config: AccountConfig;
   password?: string;
+  // Inloggning från kalendern: be även om kalenderbehörighet (Microsoft Graph).
+  calendar?: boolean;
 }
 
 export interface SetupInput {

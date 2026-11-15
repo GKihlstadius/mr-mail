@@ -1,2 +1,20 @@
 export const agent: Record<string, string> = {
+  // Frågor om lov och aktivitetsloggen för AI-verktyg
+  'Ett AI-verktyg': 'An AI tool',
+  'Det skickas {time}.': 'It will be sent {time}.',
+  '(okänd mottagare)': '(unknown recipient)',
+  '{client} vill skicka ett mejl till {to} med ämnet "{subject}".': '{client} wants to send an email to {to} with the subject "{subject}".',
+  'Kopia: {cc}': 'Cc: {cc}',
+  'Tillåt bara om du har bett om det.': 'Only allow it if you asked for it.',
+  '{client} vill skicka utkastet till {to} med ämnet "{subject}".': '{client} wants to send the draft to {to} with the subject "{subject}".',
+  '{client} vill flytta ett mejl till papperskorgen.': '{client} wants to move an email to the trash.',
+  '{client} vill flytta {n} mejl till papperskorgen.': '{client} wants to move {n} emails to the trash.',
+  'och {n} till.': 'and {n} more.',
+  '{client} vill avregistrera dig från utskicken från {address}.': '{client} wants to unsubscribe you from the mailings from {address}.',
+  '{client} vill flytta alla mejl från {address} till papperskorgen.': '{client} wants to move all emails from {address} to the trash.',
+  '{client} vill arkivera alla mejl från {address}.': '{client} wants to archive all emails from {address}.',
+  'Även nya mejl från avsändaren, från och med nu.': 'Also new emails from the sender, from now on.',
+  '{client} vill använda {tool}.': '{client} wants to use {tool}.',
+  'Avstängt i inställningarna': 'Turned off in settings',
+  'Nekat av dig': 'Declined by you',
 };

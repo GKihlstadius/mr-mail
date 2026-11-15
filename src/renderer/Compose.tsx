@@ -254,6 +254,10 @@ export function Compose() {
         setUndo(before);
         const acc = accounts.find((a) => a.id === (draftRef.current?.accountId ?? d.accountId));
         const sig = signatureBlock(acc?.signature);
+        // Ett snabbt svar kan komma innan textfältet har ritats första gången: vänta in det,
+        // annars skrivs förslaget över av starttexten.
+        for (let i = 0; i < 100 && !editor.current; i++) await new Promise((r) => setTimeout(r, 20));
+        await new Promise((r) => setTimeout(r, 0));
         editor.current?.setHtml(textToEditorHtml(res.text) + (sig ? `<div><br></div>${sig}` : ''));
         markDirty();
         const newHist: ChatTurn[] = instr

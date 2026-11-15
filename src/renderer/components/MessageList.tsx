@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type MouseEvent as RMouseEvent } from 'react';
 import type { AccountConfig, Folder, MessageSummary, SearchQuery } from '../../shared/types';
 import { cx, listDate, senderName } from '../util';
+import { APP_NAME } from '../../shared/brand';
 import { t } from '../../shared/i18n';
 import * as I from './Icons';
 import { MoveMenu } from './MoveMenu';
@@ -23,6 +24,8 @@ interface Props {
   onQuery(q: string): void;
   onSelect(id: string, mod: { ctrl: boolean; shift: boolean }): void;
   onCompose(): void;
+  onAsk?(): void;
+  askOpen?: boolean;
   onRefresh(): void;
   onMove(id: string, path: string): void;
   onOpen?(m: MessageSummary): void;
@@ -161,6 +164,11 @@ export function MessageList(p: Props) {
           <div className="subtitle">{p.subtitle}</div>
         </div>
         <div className="no-drag head-actions">
+          {p.onAsk && (
+            <button className={cx('icon-btn', 'ask-btn', p.askOpen && 'on')} id="ask-toggle" onClick={p.onAsk} title={t('Fråga {app} (Ctrl+J)', { app: APP_NAME })} aria-label={t('Fråga {app}', { app: APP_NAME })} aria-pressed={!!p.askOpen}>
+              <I.Sparkle size={17} />
+            </button>
+          )}
           <button className="icon-btn" onClick={p.onRefresh} title={t('Hämta nya mejl')} aria-label={t('Hämta nya mejl')}>
             <I.Refresh size={17} />
           </button>

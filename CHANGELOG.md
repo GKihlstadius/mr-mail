@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0
+
+- **Calendar:** Google Calendar, Outlook (Microsoft Graph) and iCloud, Fastmail or any CalDAV server. Agenda view, create and edit events, invite people, find free time. Outlook asks for calendar access only when you connect the calendar.
+- **Invitations in the reader:** answer Yes, Maybe or No right in the email; the reply goes to the organizer and your calendar is updated.
+- **Ask Mr Mail:** a chat panel (Ctrl+J) that uses the same tools and permissions as MCP agents. Works with ChatGPT (API key), a local model or your own OpenAI compatible server.
+- **Contacts** with history and upcoming meetings, and a **command palette** (Ctrl+K). Ctrl+/ lists all shortcuts.
+- **One click setup** for Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Zed, Gemini CLI, LM Studio and Codex CLI.
+- **MCP over HTTP** for URL only clients, and a **Claude Desktop extension** (.mcpb) in every release.
+- **Permissions and activity log:** choose allow, ask or never for sending, deleting and unsubscribing. Default is ask.
+- 28 MCP tools, including calendar tools and answering invitations.
+- Scoop bucket. Installs from Scoop leave updates to Scoop.
+- Fixed: a fast AI reply could be overwritten in the compose window.
+
 ## 0.6.1
 
 - New icon: a retro mascot with a letter.

@@ -258,6 +258,22 @@ const fakeOpenAi = createServer((req, res) => {
     if (req.url === '/v1/chat/completions') {
       const call = JSON.parse(body);
       openaiCalls.push(call);
+      // Chatten i appen: först ett verktygsanrop, sedan ett svar som länkar till första träffen.
+      if (Array.isArray(call.tools)) {
+        const lastUser = call.messages.map((m) => m.role).lastIndexOf('user');
+        const tool = call.messages.slice(lastUser).find((m) => m.role === 'tool');
+        if (!tool) {
+          return res.end(JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search_emails', arguments: JSON.stringify({ query: 'Demo' }) } }] } }] }));
+        }
+        let hit = null;
+        try {
+          hit = JSON.parse(tool.content)[0];
+        } catch {}
+        const content = hit ? `Du behöver svara på ett mejl:
+
+- [${hit.subject}](mail:${hit.id}) från Karin` : 'Jag hittade inget.';
+        return res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+      }
       // Svaret beror på uppgiften, så att alla AI-flöden kan provas utan riktig modell.
       const all = JSON.stringify(call.messages);
       const last = String(call.messages.at(-1)?.content ?? '');
@@ -504,6 +520,14 @@ try {
     await shot(win, 'kontodialog-oauth.png');
     check('Inloggat Google-konto visar Google som inloggning', (await win.locator('.method-switch button.on').textContent()).includes('Google'));
     await win.keyboard.press('Escape');
+    // Google-kontot loggade in utan kalenderbehörighet: kalendern ber lugnt om en ny inloggning.
+    await win.click('#nav-calendar');
+    await win.waitForSelector('.calendar-note:has-text("Logga in igen för att visa kalendern")', { timeout: 20000 });
+    check('Kalendern ber om ny inloggning för konton utan kalenderbehörighet', (await win.locator('.calendar-note').count()) >= 1);
+    await win.click('.calendar-note .btn');
+    await win.waitForSelector('.modal', { timeout: 10000 });
+    check('Logga in igen öppnar inloggningen', true);
+    await win.keyboard.press('Escape');
     await app.close();
     app = null;
   }
@@ -511,7 +535,7 @@ try {
   // 2. Riktigt flöde mot GreenMail.
   await seed();
   await seedCustom(nordljus);
-  const second = await launch(join(tmp, 'flode'), { MRMAIL_NO_SEED: '1', ...discoveryEnv, MRMAIL_SPARK_EXPORT: sparkFlow, MRMAIL_TEST_HTTP_UNSUB: '1', MRMAIL_UPDATE_DRYRUN: '1' });
+  const second = await launch(join(tmp, 'flode'), { MRMAIL_NO_SEED: '1', ...discoveryEnv, MRMAIL_SPARK_EXPORT: sparkFlow, MRMAIL_TEST_HTTP_UNSUB: '1', MRMAIL_UPDATE_DRYRUN: '1', MRMAIL_TEST_ASK: 'deny', MRMAIL_CLIENT_HOME: join(tmp, 'klienter') });
   app = second.app;
   const { win } = second;
   await addTestAccount(win, nordljus, 'Nordljus');
@@ -528,7 +552,8 @@ try {
   await win.waitForSelector('.dot-online', { timeout: 20000 });
   await win.waitForFunction(() => document.querySelectorAll('.dot-online').length === 2, null, { timeout: 20000 });
   check('Båda testkontona är anslutna (grön prick)', true);
-  await win.evaluate(() => window.api.saveSettings({ undoSendSeconds: 0, smartInbox: false }));
+  // AI-verktygen får skicka och radera utan att fråga i testerna, frågan provas för sig nedan.
+  await win.evaluate(() => window.api.saveSettings({ undoSendSeconds: 0, smartInbox: false, agentPermissions: { send: 'allow', delete: 'allow', unsubscribe: 'allow' } }));
   // AI med egen server: den låtsade OpenAI-servern.
   await win.evaluate((u) => window.api.saveSettings({ aiEngine: 'spark', sparkUrl: u, sparkKey: 'server-e2e', sparkModel: 'test-model' }), openaiUrl);
   await win.waitForFunction(() => document.querySelectorAll('.row').length >= 8, null, { timeout: 20000 });
@@ -623,6 +648,140 @@ try {
     check('Svar skrivet i notisen skickas med citat', !!reply && replyText.includes('Tack Anna, det passar bra.') && replyText.includes('Kom just nu.'));
   }
 
+  // Kalenderinbjudan: kortet i läsvyn, svar Ja och iMIP-svaret hos organisatören.
+  {
+    const start = new Date(now + 3 * day);
+    start.setHours(14, 0, 0, 0);
+    const z = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    const uid = `planering-${run}@exempelbolaget.test`;
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'PRODID:-//e2e//EN',
+      'VERSION:2.0',
+      'METHOD:REQUEST',
+      'BEGIN:VEVENT',
+      `UID:${uid}`,
+      'SEQUENCE:0',
+      `DTSTAMP:${z(new Date())}`,
+      `DTSTART:${z(start)}`,
+      `DTEND:${z(new Date(start.getTime() + 3600000))}`,
+      'SUMMARY:Planering Q1',
+      'LOCATION:Rum Norrsken',
+      'DESCRIPTION:Länk: https://meet.google.com/abc-defg-hij',
+      `ORGANIZER;CN=Karin Lund:mailto:${karin}`,
+      `ATTENDEE;CN=Alex Berg;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${nordljus}`,
+      `ATTENDEE;CN=Erik Holm;PARTSTAT=ACCEPTED:mailto:erik@nordljus.test`,
+      'END:VEVENT',
+      'END:VCALENDAR',
+      ''
+    ].join('\r\n');
+    await smtp.sendMail({ from: `Karin Lund <${karin}>`, to: nordljus, subject: 'Inbjudan: Planering Q1', text: 'Välkommen på planering.', icalEvent: { method: 'REQUEST', content: ics } });
+    await win.waitForSelector('.row:has-text("Inbjudan: Planering Q1")', { timeout: 20000 });
+    await win.click('.row:has-text("Inbjudan: Planering Q1")');
+    await win.waitForSelector('.invite-card', { timeout: 15000 });
+    const card = await win.locator('.invite-card').innerText();
+    check(
+      'Inbjudan visas som kort med titel, plats och möteslänk',
+      card.includes('Planering Q1') && card.includes('Rum Norrsken') && card.includes('Google Meet') && card.includes('2 deltagare'),
+      card.replace(/\n/g, ' | ').slice(0, 120)
+    );
+    check('Kortet har knapparna Ja, Kanske och Nej', (await win.locator('.invite-rsvp button').allTextContents()).join(',') === 'Ja,Kanske,Nej');
+    check('Kalenderdelen visas inte som bilaga', (await win.locator('.att-name:has-text(".calendar")').count()) === 0);
+    await shot(win, 'inbjudan.png');
+    await win.click('.invite-rsvp button[data-response="accept"]');
+    await win.waitForSelector('.invite-status:has-text("Du har tackat ja")', { timeout: 20000 });
+    check('Svaret syns på kortet', true);
+    const reply = await imapFetchLatest(karin, 'INBOX', 'Accepterat: Planering Q1', 20000);
+    const parsedReply = reply ? await simpleParser(reply) : null;
+    const calPart = parsedReply?.attachments.find((a) => a.contentType === 'text/calendar')?.content.toString() ?? '';
+    const lines = calPart.replace(/\r?\n[ \t]/g, '').split(/\r?\n/);
+    const attendee = lines.find((l) => l.startsWith('ATTENDEE')) ?? '';
+    check(
+      'iMIP-svaret kommer fram till organisatören med PARTSTAT=ACCEPTED',
+      !!reply && lines.includes('METHOD:REPLY') && lines.includes(`UID:${uid}`) && attendee.includes('PARTSTAT=ACCEPTED') && attendee.toLowerCase().endsWith(`mailto:${nordljus}`),
+      attendee
+    );
+    check('Svaret sparas i Skickat', !!(await imapFetchLatest(nordljus, 'Sent', 'Accepterat: Planering Q1', 10000)));
+  }
+
+  // Kalendern mot Radicale (CalDAV), när den är igång:
+  //   docker run -d --name mr-mail-radicale --cpus 1 -p 5232:5232 tomsquest/docker-radicale
+  const radicale = await fetch('http://127.0.0.1:5232/.web/', { signal: AbortSignal.timeout(1500) }).then(
+    () => true,
+    () => false
+  );
+  if (!radicale) console.log('     Radicale är inte igång, kalendern provas inte mot CalDAV');
+  else {
+    const auth = `Basic ${Buffer.from(`${nordljus}:test`).toString('base64')}`;
+    await fetch(`http://127.0.0.1:5232/${nordljus}/`, { method: 'PROPFIND', headers: { Authorization: auth, Depth: '0' } });
+    await fetch(`http://127.0.0.1:5232/${nordljus}/jobb/`, {
+      method: 'MKCALENDAR',
+      headers: { Authorization: auth, 'Content-Type': 'application/xml' },
+      body: '<?xml version="1.0"?><c:mkcalendar xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:set><d:prop><d:displayname>Jobb</d:displayname></d:prop></d:set></c:mkcalendar>'
+    });
+    const cfg = await win.evaluate((e) => window.api.state().then((s) => s.accounts.find((a) => a.email === e)), nordljus);
+    await win.evaluate((c) => window.api.saveAccount({ config: { ...c, caldavUrl: 'http://127.0.0.1:5232/' } }), cfg);
+    await win.waitForSelector('.dot-online', { timeout: 20000 });
+    await win.click('#nav-calendar');
+    await win.waitForSelector('.agenda-day', { timeout: 30000 });
+    check('Kalendern ansluts via CalDAV och visar agendan', (await win.locator('.agenda-date').first().textContent()) === 'I dag');
+    const hour = new Date().getHours();
+    if (hour < 22) {
+      const s = Date.now() + 3600000;
+      await win.evaluate(([a, b]) => window.api.calendarCreate({ title: 'Fika med teamet', start: a, end: b, allDay: false }), [s, s + 1800000]);
+      await win.waitForFunction(() => document.querySelector('#nav-calendar .nav-sub')?.textContent.includes('Fika med teamet'), null, { timeout: 15000 }).catch(() => undefined);
+      check('Sidopanelen visar dagens möten under Kalender', (await win.locator('#nav-calendar .nav-sub').textContent().catch(() => '')).includes('i dag'), await win.locator('#nav-calendar .nav-sub').textContent().catch(() => ''));
+    }
+    await win.click('#calendar-new');
+    await win.waitForSelector('.event-modal');
+    const tomorrow = new Date(now + day);
+    const iso = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
+    await win.fill('#event-title', 'Kundmöte e2e');
+    await win.fill('#event-date', iso);
+    await win.fill('#event-start', '10:00');
+    await win.fill('#event-end', '11:00');
+    await win.fill('#event-location', 'Rum Norrsken');
+    await win.fill('#event-invitees', karin);
+    await win.click('#event-save');
+    await win.waitForSelector('.event-confirm');
+    check('Inbjudan till deltagare kräver en bekräftelse', (await win.locator('.event-confirm').textContent()).includes(karin) && (await win.locator('#event-save').textContent()) === 'Skicka inbjudan');
+    await shot(win, 'kalender-ny-handelse.png');
+    await win.click('#event-save');
+    await win.waitForSelector('.event-modal', { state: 'detached', timeout: 20000 });
+    await win.waitForSelector('.agenda-title:has-text("Kundmöte e2e")', { timeout: 15000 });
+    check('Den nya händelsen syns i agendan', true);
+    const req = await imapFetchLatest(karin, 'INBOX', 'Inbjudan: Kundmöte e2e', 20000);
+    const reqCal = req ? ((await simpleParser(req)).attachments.find((a) => a.contentType === 'text/calendar')?.content.toString() ?? '') : '';
+    check('Inbjudan mejlas med METHOD:REQUEST när CalDAV-servern inte gör det', reqCal.includes('METHOD:REQUEST') && reqCal.includes('SUMMARY:Kundmöte e2e'));
+    await win.click('.calendar-tools button[aria-label="Uppdatera"]');
+    await win.waitForTimeout(1500);
+    await win.waitForSelector('.agenda-title:has-text("Kundmöte e2e")', { timeout: 15000 });
+    check('Händelsen finns kvar på servern efter uppdatering', true);
+    // Ändra händelsen: klick öppnar samma dialog, ändringen till deltagare kräver en bekräftelse.
+    await win.click('.agenda-row:has-text("Kundmöte e2e")');
+    await win.waitForSelector('.event-modal');
+    check('Klick på en händelse öppnar Ändra händelse', (await win.locator('.event-modal h2').textContent()) === 'Ändra händelse' && (await win.locator('#event-title').inputValue()) === 'Kundmöte e2e');
+    check('Dialogen har tid, plats och deltagare kvar', (await win.locator('#event-start').inputValue()) === '10:00' && (await win.locator('#event-location').inputValue()) === 'Rum Norrsken' && (await win.locator('.event-modal').evaluate((el) => el.textContent + ' ' + [...el.querySelectorAll('input')].map((i) => i.value).join(' '))).includes(karin));
+    await win.fill('#event-title', 'Kundmöte e2e ändrat');
+    await win.fill('#event-start', '13:00');
+    await win.fill('#event-end', '14:00');
+    await win.click('#event-save');
+    await win.waitForSelector('.event-confirm');
+    check('Ändring med deltagare kräver en bekräftelse', (await win.locator('.event-confirm').textContent()).includes('uppdatering') && (await win.locator('#event-save').textContent()) === 'Skicka uppdatering');
+    await shot(win, 'kalender-andra-handelse.png');
+    await win.click('#event-save');
+    await win.waitForSelector('.event-modal', { state: 'detached', timeout: 20000 });
+    await win.waitForSelector('.agenda-title:has-text("Kundmöte e2e ändrat")', { timeout: 15000 }).catch(() => undefined);
+    const moved = win.locator('.agenda-event:has-text("Kundmöte e2e ändrat") .agenda-time');
+    check('Den ändrade händelsen syns med ny tid', (await moved.count()) === 1 && (await moved.textContent()).includes('13:00'), await moved.textContent().catch(() => ''));
+    const upd = await imapFetchLatest(karin, 'INBOX', 'Kundmöte e2e ändrat', 20000);
+    const updCal = upd ? ((await simpleParser(upd)).attachments.find((a) => a.contentType === 'text/calendar')?.content.toString() ?? '') : '';
+    check('Deltagaren får uppdateringen med METHOD:REQUEST', updCal.includes('METHOD:REQUEST') && updCal.includes('SUMMARY:Kundmöte e2e ändrat'));
+    await shot(win, 'kalender.png');
+    await win.click('.nav-item:has-text("Alla inkorgar")');
+    await win.waitForSelector('.list-pane');
+  }
+
   // Mörkt läge.
   await app.evaluate(({ nativeTheme }) => {
     nativeTheme.themeSource = 'dark';
@@ -701,6 +860,97 @@ try {
       await qc.click('button[aria-label="Släng utkastet"]').catch(() => undefined);
       await gone;
     }
+  }
+
+  // Fråga Mr Mail: chatten anropar search_emails och svarar med en länk till mejlet.
+  if (!skipAi) {
+    await win.click('.nav-item:has-text("Alla inkorgar")');
+    await win.keyboard.press('Control+j');
+    await win.waitForSelector('.chat-panel.open');
+    check('Ctrl+J öppnar Fråga Mr Mail', true);
+    await win.fill('#chat-input', 'Vad behöver jag svara på i dag?');
+    await win.keyboard.press('Enter');
+    await win.waitForSelector('.chat-msg.assistant:not(.thinking) .chat-answer', { timeout: 60000 });
+    const stepText = await win.locator('.chat-msg.assistant .chat-step').allTextContents();
+    check('Chatten visar verktygssteget', stepText.some((x) => x.includes('Söker i mejlen')), stepText.join(' | '));
+    check('Chatten visar svaret', (await win.locator('.chat-answer').textContent()).includes('Du behöver svara'));
+    const ref = win.locator('.chat-ref[data-ref="mail"]');
+    check('Svaret länkar till mejlet', (await ref.count()) === 1 && (await ref.textContent()).includes('Demo av Nordljus'));
+    await shot(win, 'fraga-mr-mail.png');
+    await ref.click();
+    await win.waitForSelector('.reader:not(.empty-reader):has-text("Demo av Nordljus")', { timeout: 10000 }).catch(() => undefined);
+    check('Länken öppnar mejlet i läsvyn', (await win.locator('.reader:not(.empty-reader)').count()) === 1 && (await win.locator('.reader').innerText()).includes('Demo av Nordljus'));
+    const loggedChat = await win.evaluate(() => window.api.agentLog());
+    check('Chattens anrop syns i aktiviteten som Mr Mail', loggedChat.some((e) => e.tool === 'search_emails' && e.client === 'Mr Mail'));
+    await win.click('#chat-new');
+    check('Ny chatt tömmer samtalet', (await win.locator('.chat-msg').count()) === 0);
+    await win.keyboard.press('Control+j');
+    await win.waitForSelector('.chat-panel:not(.open)');
+  }
+
+  // Kontakter: listan med antal mejl, detaljen med mejlen och Skriv mejl.
+  {
+    await win.click('#nav-contacts');
+    await win.waitForSelector('.contact-row', { timeout: 10000 });
+    const krow = win.locator(`.contact-row[data-address="${karin}"]`);
+    check('Kontakter listar personerna med antal mejl', (await krow.count()) === 1 && /\d+ mejl/.test(await krow.locator('.contact-meta').textContent()), await krow.locator('.contact-meta').textContent().catch(() => ''));
+    check('Egna adresser visas inte i Kontakter', (await win.locator(`.contact-row[data-address="${nordljus}"]`).count()) === 0);
+    await win.fill('#contact-search', 'karin');
+    await win.waitForFunction(() => document.querySelectorAll('.contact-row').length === 1, null, { timeout: 5000 }).catch(() => undefined);
+    check('Sökningen i Kontakter filtrerar listan', (await win.locator('.contact-row').count()) === 1);
+    await krow.click();
+    await win.waitForSelector(`.contact-card:has-text("${karin}")`, { timeout: 10000 });
+    const mails = await win.locator('.contact-mail-subject').allTextContents();
+    check('Detaljen visar mejlen med kontakten', mails.some((m) => m.includes('Demo av Nordljus')), mails.slice(0, 3).join(' | '));
+    check('Detaljen räknar mottagna och skickade', /mottagna|mottaget/.test(await win.locator('.contact-stats').textContent()));
+    await shot(win, 'kontakter.png');
+    const pw = app.waitForEvent('window');
+    await win.click('#contact-write');
+    const cw = await pw;
+    await cw.waitForSelector('#to');
+    check('Skriv mejl fyller i kontakten som mottagare', (await cw.locator('#to').inputValue()).includes(karin));
+    const gone = cw.waitForEvent('close', { timeout: 20000 });
+    await cw.click('button[aria-label="Släng utkastet"]').catch(() => cw.close());
+    await gone.catch(() => undefined);
+    await win.locator('.contact-mail:has-text("Demo av Nordljus")').first().click();
+    await win.waitForSelector('.reader:not(.empty-reader)', { timeout: 10000 }).catch(() => undefined);
+    check('Ett mejl i kontakten öppnas i läsvyn', (await win.locator('.reader:not(.empty-reader)').count()) === 1 && (await win.locator('.list-pane').count()) === 1);
+  }
+
+  // Kommandopaletten: Ctrl+K, skriv, Enter navigerar. Kortkommandona listas med Ctrl+/.
+  {
+    await win.keyboard.press('Control+k');
+    await win.waitForSelector('.palette');
+    check('Ctrl+K öppnar kommandopaletten', (await win.locator('.palette-item').count()) > 5);
+    check('Åtgärderna visar sina kortkommandon', (await win.locator('.palette-item:has-text("Nytt mejl") kbd').textContent()) === 'Ctrl+N');
+    await win.keyboard.type('kalend');
+    check('Bästa träffen väljs först', (await win.locator('.palette-item.active').textContent()).includes('Kalender'));
+    await shot(win, 'kommandopalett.png');
+    await win.keyboard.press('Enter');
+    await win.waitForSelector('.calendar-pane', { timeout: 5000 }).catch(() => undefined);
+    check('Enter går till Kalender', (await win.locator('.calendar-pane').count()) === 1 && (await win.locator('.palette').count()) === 0);
+    await win.keyboard.press('Control+k');
+    await win.keyboard.type('karin');
+    await win.waitForSelector('.palette-item:has-text("Skriv till Karin")', { timeout: 5000 }).catch(() => undefined);
+    check('Paletten föreslår Skriv till en kontakt', (await win.locator('.palette-item:has-text("Skriv till Karin")').count()) === 1);
+    await win.locator('#palette-input').fill('demo av nordljus');
+    check('Paletten hittar mejl på ämnet', (await win.locator('.palette-item:has-text("Demo av Nordljus")').count()) >= 1);
+    await win.locator('#palette-input').fill('inkorg');
+    await win.keyboard.press('ArrowDown');
+    await win.keyboard.press('ArrowUp');
+    await win.keyboard.press('Enter');
+    await win.waitForSelector('.list-pane', { timeout: 5000 }).catch(() => undefined);
+    check('Pilarna och Enter går till Inkorg', (await win.locator('.list-pane').count()) === 1);
+    await win.keyboard.press('Control+k');
+    await win.keyboard.press('Escape');
+    check('Esc stänger paletten', (await win.locator('.palette').count()) === 0);
+    await win.keyboard.press('Control+/');
+    await win.waitForSelector('.shortcuts-modal', { timeout: 3000 }).catch(() => undefined);
+    const keys = await win.locator('.shortcut-row kbd').allTextContents();
+    check('Kortkommandon listar Ctrl+K, Ctrl+J, Ctrl+N och Ctrl+Z', ['Ctrl+K', 'Ctrl+J', 'Ctrl+N', 'Ctrl+Z'].every((k) => keys.includes(k)), keys.slice(0, 6).join(' '));
+    await shot(win, 'kortkommandon.png');
+    await win.keyboard.press('Escape');
+    await win.waitForSelector('.shortcuts-modal', { state: 'detached', timeout: 3000 }).catch(() => undefined);
   }
 
   // Del 3: ChatGPT via OpenAI:s API, mot en låtsad server.
@@ -785,7 +1035,12 @@ try {
   check('Importen föreslår Nordljus-kontot', (await win.locator('.import-card select').first().inputValue()) === nordljusId);
   await win.click('.spark-import .btn.primary');
   await win.waitForSelector('.spark-import', { state: 'detached' });
-  await win.keyboard.press('Escape');
+  // Escape stänger inställningarna. Fokus kan ligga utanför dialogen precis efter importen, försök några gånger.
+  for (let i = 0; i < 5 && (await win.locator('.modal').count()); i++) {
+    await win.locator('.modal').first().focus().catch(() => undefined);
+    await win.keyboard.press('Escape');
+    await win.waitForSelector('.modal', { state: 'detached', timeout: 2000 }).catch(() => undefined);
+  }
   await win.waitForSelector('.modal', { state: 'detached' });
   const flowSigs = await win.evaluate(() => window.api.state());
   check('Egen signatur sparas före importen', /Alex \/ Gmail/.test(flowSigs.accounts.find((a) => a.email.includes('@gmail.test'))?.signature ?? ''));
@@ -1078,6 +1333,9 @@ try {
       check('MCP: sök hittar mejlet', !!demo, hits.text.slice(0, 80));
       const read = await mcp.tool('read_email', { id: demo?.id });
       check('MCP: läs ger hela texten', read.text.includes('mässan i Göteborg'));
+      const inbjudan = JSON.parse((await mcp.tool('search_emails', { query: 'Planering Q1' })).text || '[]').find((m) => m.subject === 'Inbjudan: Planering Q1');
+      const invText = (await mcp.tool('read_email', { id: inbjudan?.id })).text;
+      check('MCP: read_email sammanfattar inbjudan och svaret', invText.includes('Meeting invitation: Planering Q1') && invText.includes('The user has answered: accept'), invText.slice(0, 200));
       const winsBefore = app.windows().length;
       const utkast = await mcp.tool('skriv_utkast', { svar_pa: demo?.id, text: 'Hej Karin!\n\nTisdag klockan 14 passar fint.\n\nVänliga hälsningar,\nAlex' });
       const draftId = utkast.text.match(/Id: (\S+)/)?.[1];
@@ -1103,9 +1361,109 @@ try {
       check('MCP: arkivera flyttar mejlet', !arch.error && !!(await imapFetchLatest(gmail, 'Archive', 'CI gick igenom')), arch.text);
       const bad = await mcp.tool('send_email', { account: nordljus, text: 'Ingen mottagare' });
       check('MCP: fel returneras som fel', bad.error === true && bad.text.includes('Recipient'));
+
+      // Kalenderverktygen mot Radicale-kalendern som anslöts ovan.
+      const toolNames = (await mcp.rpc('tools/list')).result.tools.map((x) => x.name);
+      check('MCP: kalenderverktygen finns i listan', ['list_events', 'find_free_time', 'create_event', 'update_event', 'delete_event', 'respond_to_invite'].every((n) => toolNames.includes(n)));
+      if (radicale) {
+        const d2 = new Date(now + 2 * day);
+        const iso2 = `${d2.getFullYear()}-${String(d2.getMonth() + 1).padStart(2, '0')}-${String(d2.getDate()).padStart(2, '0')}`;
+        const made = await mcp.tool('create_event', { title: `Fokus ${run}`, start: `${iso2} 09:00`, end: `${iso2} 10:30`, location: 'Hemma' });
+        const evId = made.text.match(/Id: (\S+)/)?.[1];
+        check('MCP: create_event utan deltagare skapar händelsen', !made.error && !!evId, made.text);
+        const listed = await mcp.tool('list_events', { from: iso2, to: iso2 });
+        const found = listed.error ? [] : JSON.parse(listed.text);
+        check('MCP: list_events visar händelsen med tid och plats', found.some((e) => e.title === `Fokus ${run}` && e.start === `${iso2} 09:00` && e.location === 'Hemma'), listed.text.slice(0, 120));
+        const free = await mcp.tool('find_free_time', { duration_minutes: 60, from: iso2, to: iso2 });
+        const slots = free.error ? [] : JSON.parse(free.text);
+        check('MCP: find_free_time hoppar över upptagen tid', slots.length > 0 && !slots.some((x) => x.start < `${iso2} 10:30` && x.end > `${iso2} 09:00`), free.text.slice(0, 160));
+        const upd = await mcp.tool('update_event', { id: evId, start: `${iso2} 13:00` });
+        const after = JSON.parse((await mcp.tool('list_events', { from: iso2, to: iso2, query: `Fokus ${run}` })).text);
+        check('MCP: update_event flyttar händelsen och behåller längden', !upd.error && after[0]?.start === `${iso2} 13:00` && after[0]?.end === `${iso2} 14:30`, upd.text);
+        const del = await mcp.tool('delete_event', { id: after[0]?.id });
+        const gone = await mcp.tool('list_events', { from: iso2, to: iso2, query: `Fokus ${run}` });
+        check('MCP: delete_event tar bort händelsen', !del.error && gone.text === 'No events.', del.text);
+      }
+
+      // Behörigheter: Aldrig stoppar utan fråga, Fråga först visar frågan (testkroken svarar nej).
+      await win.evaluate(() => window.api.saveSettings({ agentPermissions: { send: 'never', delete: 'allow', unsubscribe: 'allow' } }));
+      const never = await mcp.tool('send_email', { account: nordljus, to: karin, subject: `Aldrig ${run}`, text: 'Ska inte skickas.' });
+      check('MCP: Aldrig skicka ger ett fel som föreslår utkast', never.error === true && never.text.includes('draft_email'), never.text.slice(0, 80));
+      await win.evaluate(() => window.api.saveSettings({ agentPermissions: { send: 'ask', delete: 'ask', unsubscribe: 'allow' } }));
+      const asked = await mcp.tool('send_email', { account: nordljus, to: karin, subject: `Fraga ${run}`, text: 'Ska inte heller skickas.' });
+      const questions = (await app.evaluate(() => globalThis.__mrmailAsked)) ?? [];
+      check(
+        'MCP: Fråga först frågar med mottagare och ämne, nej stoppar',
+        asked.error === true && asked.text.includes('declined') && questions.some((q) => q.includes('e2e vill skicka ett mejl till') && q.includes(`Fraga ${run}`)),
+        questions.at(-1)
+      );
+      const keep = JSON.parse((await mcp.tool('list_emails', { account: nordljus })).text)[0];
+      const noTrash = await mcp.tool('trash', { ids: [keep?.id] });
+      check('MCP: radera frågar också', noTrash.error === true && ((await app.evaluate(() => globalThis.__mrmailAsked)) ?? []).some((q) => q.includes('papperskorgen')));
+      const meeting = await mcp.tool('create_event', { title: `Hemligt möte ${run}`, start: '2030-01-10 10:00', attendees: [karin] });
+      check(
+        'MCP: create_event med deltagare frågar som att skicka, nej stoppar',
+        meeting.error === true && ((await app.evaluate(() => globalThis.__mrmailAsked)) ?? []).some((q) => q.includes(`Hemligt möte ${run}`) && q.includes(karin)),
+        meeting.text.slice(0, 100)
+      );
+      check('MCP: inget skickades när det nekades', !(await imapFetchLatest(karin, 'INBOX', `Aldrig ${run}`, 3000)) && !(await imapFetchLatest(karin, 'INBOX', `Fraga ${run}`, 1500)));
+      await win.evaluate(() => window.api.saveSettings({ agentPermissions: { send: 'allow', delete: 'allow', unsubscribe: 'allow' } }));
+      const log = await win.evaluate(() => window.api.agentLog());
+      const sentLog = log.find((e) => e.tool === 'send_email' && e.ok && e.summary.includes(`Direkt ${run}`));
+      const deniedLog = log.find((e) => e.tool === 'send_email' && !e.ok && e.summary.includes(`Fraga ${run}`));
+      check(
+        'Aktivitet: anropen loggas med sammanfattning, utan brödtext',
+        !!sentLog && !!deniedLog && sentLog.client === 'e2e' && !log.some((e) => e.summary.includes('offerten')) && log.some((e) => e.tool === 'search_emails'),
+        `${log.length} rader`
+      );
     } finally {
       mcp.close();
     }
+  }
+
+  // MCP över HTTP, för verktyg som bara tar en adress.
+  {
+    const port = 17000 + Math.floor(Math.random() * 2000);
+    await win.evaluate((p) => window.api.saveSettings({ agentHttp: true, agentHttpPort: p }), port);
+    const token = await waitUntil(async () => (await win.evaluate(() => window.api.agentInfo())).http.running && (await win.evaluate(() => window.api.state())).settings.agentHttpToken, 10000);
+    const post = (body, headers = {}) =>
+      fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...headers }, body: JSON.stringify(body) });
+    try {
+      const init = await post({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'http-e2e', version: '1' } } });
+      const sid = init.headers.get('mcp-session-id');
+      const call = await (await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_emails', arguments: { account: nordljus, limit: 3 } } }, { 'mcp-session-id': sid })).json();
+      check('MCP över HTTP: initialize och tools/call fungerar', init.status === 200 && !!sid && call.result?.isError === false && call.result.content[0].text.includes('"id"'));
+      const wrong = await post({ jsonrpc: '2.0', id: 3, method: 'ping' }, { authorization: 'Bearer fel' });
+      check('MCP över HTTP: fel nyckel nekas', wrong.status === 401);
+      const rotated = await win.evaluate(() => window.api.agentHttpRotate());
+      const old = await post({ jsonrpc: '2.0', id: 4, method: 'ping' });
+      check('MCP över HTTP: ny nyckel gör den gamla ogiltig', !!rotated && rotated !== token && old.status === 401);
+    } finally {
+      await win.evaluate(() => window.api.saveSettings({ agentHttp: false }));
+    }
+    const closed = await waitUntil(async () => fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' }).then(() => false, () => true), 5000);
+    check('MCP över HTTP: stängs när inställningen slås av', !!closed);
+  }
+
+  // AI-verktygen i inställningarna: listan och anslut mot en tillfällig hemmapp.
+  {
+    mkdirSync(join(tmp, 'klienter', 'roaming', 'Zed'), { recursive: true });
+    writeFileSync(join(tmp, 'klienter', 'roaming', 'Zed', 'settings.json'), '// Zed\n{\n  "theme": "One Dark",\n}\n');
+    await win.click('button[aria-label="Inställningar"]');
+    await win.waitForSelector('#mcp-clients');
+    await win.click('#mcp-clients [data-client="zed"] button');
+    await win.waitForSelector('#mcp-clients [data-client="zed"] .client-state.on');
+    const zed = readFileSync(join(tmp, 'klienter', 'roaming', 'Zed', 'settings.json'), 'utf8');
+    check('Inställningar: Anslut lägger in Mr Mail i Zed och behåller kommentaren', zed.includes('// Zed') && zed.includes('"mr-mail"') && zed.includes('mr-mail-mcp.cjs'));
+    const order = await win.$$eval('#mcp-clients .client-row', (rows) => rows.map((r) => r.getAttribute('data-client')));
+    check('Inställningar: installerade verktyg först', order[0] === 'zed', order.join(', '));
+    check('Inställningar: aktiviteten visas', (await win.locator('#agent-activity .activity-row').count()) > 0);
+    await shot(win, 'ai-verktyg.png');
+    await win.click('#mcp-clients [data-client="zed"] button');
+    await win.waitForSelector('#mcp-clients [data-client="zed"] .client-state.on', { state: 'detached' });
+    check('Inställningar: Koppla från tar bort posten igen', !readFileSync(join(tmp, 'klienter', 'roaming', 'Zed', 'settings.json'), 'utf8').includes('mr-mail'));
+    await win.click('.settings-modal .modal-foot .btn:has-text("Avbryt")');
+    await win.waitForSelector('.settings-modal', { state: 'detached' });
   }
 
   // Del 1: ljust, mörkt eller som Windows.
@@ -1264,7 +1622,10 @@ try {
     const ct = await pt;
     await ct.waitForSelector('.editor');
     await ct.fill('#to', karin);
+    // Fokus i texten innan skrivandet, annars kan tangenterna hamna kvar i adressfältet.
     await ct.locator('.editor').click();
+    await ct.locator('.editor').focus();
+    await ct.waitForFunction(() => document.activeElement?.closest('.editor'));
     await ct.keyboard.press('Control+Home');
     await ct.keyboard.type('Hej! Tack för ditt mejl, jag återkommer i veckan.');
     await ct.click('.templates-btn');
@@ -1272,7 +1633,10 @@ try {
     await ct.fill('#template-name', 'Återkommer');
     await ct.click('#template-save');
     await ct.waitForSelector('#template-name', { state: 'detached' });
-    const saved = (await win.evaluate(() => window.api.state())).settings.templates;
+    const saved = (await waitUntil(async () => {
+      const list = (await win.evaluate(() => window.api.state())).settings.templates;
+      return list.length ? list : null;
+    }, 5000)) ?? [];
     check('Texten sparas som mall utan signaturen', saved.length === 1 && saved[0].name === 'Återkommer' && saved[0].text === 'Hej! Tack för ditt mejl, jag återkommer i veckan.', JSON.stringify(saved));
     await ct.evaluate(() => {
       const ed = document.querySelector('.editor');

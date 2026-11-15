@@ -314,9 +314,9 @@ export function AddAccount({ accounts, existing, onClose, onSaved, onManual }: P
             </button>{' '}
             {t('och skapa ett projekt som heter {app}.', { app: APP_NAME })}
           </li>
-          <li>{t('Under API:er och tjänster, Bibliotek: sök på Gmail API och klicka Aktivera.')}</li>
+          <li>{t('Under API:er och tjänster, Bibliotek: aktivera Gmail API och Google Calendar API.')}</li>
           <li>{t('Under Google Auth Platform: appnamn {app}, målgrupp Extern, och lägg till din Gmail-adress som testanvändare.', { app: APP_NAME })}</li>
-          <li>{t('Under Dataåtkomst: lägg till omfattningen https://mail.google.com/.')}</li>
+          <li>{t('Under Dataåtkomst: lägg till https://mail.google.com/, https://www.googleapis.com/auth/calendar.events och https://www.googleapis.com/auth/calendar.readonly.')}</li>
           <li>{t('Under Klienter, Skapa klient: välj Datorprogram. Kopiera klient-id och klienthemlighet hit.')}</li>
         </ol>
         <label className="field">
