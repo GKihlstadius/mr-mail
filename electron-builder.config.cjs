@@ -23,7 +23,7 @@ module.exports = {
   nsis: {
     oneClick: true,
     perMachine: false,
-    createDesktopShortcut: 'always',
+    createDesktopShortcut: false,
     createStartMenuShortcut: true,
     shortcutName: name,
     uninstallDisplayName: name,

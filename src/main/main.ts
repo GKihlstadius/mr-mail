@@ -27,7 +27,8 @@ import type {
   SearchQuery,
   SetupInput,
   SetupOutcome,
-  TestResult
+  TestResult,
+  TrustedSender
 } from '../shared/types';
 import { defaultAccounts, getProvider, guessProvider, isValidEmail, makeAccount, slugify, validateAccount } from '../shared/accounts';
 import { buildDraft, formatAddress, removeDashes } from '../shared/compose';
@@ -61,6 +62,7 @@ import { guardAgent, type AskRequest } from './agentGuard';
 import { McpClientError, clientStatus, connectClient, disconnectClient, envFromProcess, type McpEnv } from './mcpClients';
 import { APP_FILE_NAME, APP_NAME, APP_VERSION, GITHUB_REPO, dataDirName, DB_FILE } from '../shared/brand';
 import { getLang, resolveLang, setLang, t } from '../shared/i18n';
+import { remoteImagePolicy, type RemoteImagePolicy } from '../shared/trust';
 import { migrateSignatures, parseSparkExport, resolveSignature, type SparkSignature } from '../shared/signatures';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -885,10 +887,14 @@ function listMessages(sel: MailboxSelection, limit = 300): { items: MessageSumma
 
 // Avsändare användaren har skrivit till eller valt att behålla räknas alltid som personliga.
 let sentToCache: { at: number; set: Set<string> } | null = null;
-function personalOverrides(list: MessageSummary[]): MessageSummary[] {
+function sentTo(): Set<string> {
   if (!sentToCache || Date.now() - sentToCache.at > 60_000) sentToCache = { at: Date.now(), set: store.sentToAddresses() };
+  return sentToCache.set;
+}
+
+function personalOverrides(list: MessageSummary[]): MessageSummary[] {
   const keep = new Set(store.getSettings().cleanKeep);
-  const sent = sentToCache.set;
+  const sent = sentTo();
   for (const m of list) {
     const a = m.from.address.toLowerCase();
     if (m.category !== 'personal' && (keep.has(a) || sent.has(a))) m.category = 'personal';
@@ -989,7 +995,26 @@ async function openMessage(id: string, markSeen = true): Promise<FullMessage> {
       .setFlag(m.folder, m.uid, '\\Seen', true)
       .catch((e) => log(`kunde inte markera läst: ${e?.message}`));
   }
-  return { ...m, body };
+  return { ...m, body, remoteImages: imagePolicy(m) };
+}
+
+// Bilder från internet visas direkt för betrodda avsändare och för adresser användaren själv har skrivit till,
+// men aldrig i skräpposten.
+function imagePolicy(m: MessageSummary): RemoteImagePolicy {
+  return remoteImagePolicy({
+    from: m.from.address,
+    role: store.folderRole(m.accountId, m.folder),
+    folder: m.folder,
+    labels: m.labels,
+    trusted: new Set(store.trustedSenders().map((s) => s.address)),
+    sentTo: sentTo()
+  });
+}
+
+function setTrustedSender(address: string, trusted: boolean): TrustedSender[] {
+  if (!store.setTrustedSender(String(address ?? ''), !!trusted)) throw new Error(t('Ogiltig adress.'));
+  notifyChanged();
+  return store.trustedSenders();
 }
 
 // Kalenderinbjudningar: svaret skickas som iMIP till organisatören från kontot som bjöds in.
@@ -1658,6 +1683,8 @@ function registerIpc() {
     return action ? cleanBulk(address, action) : 0;
   });
   handle('clean-keep', (address: string, keep: boolean) => setCleanKeep(address, keep));
+  handle('trusted-senders', () => store.trustedSenders());
+  handle('trusted-sender-set', (address: string, trusted: boolean) => setTrustedSender(address, trusted));
   handle('codex-status', (fresh?: boolean) => codexStatus(store.getSettings(), !!fresh));
   handle('ai-task', (sourceId: string, task: 'summary' | 'todo' | 'quick', engine?: AiEngine) => aiTask(sourceId, task, engine));
   handle('account-save', (input: AccountInput) => saveAccount(input));

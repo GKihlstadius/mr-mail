@@ -52,6 +52,7 @@ export const main: Record<string, string> = {
   'Kontot finns redan i {app}.': 'The account already exists in {app}.',
   'Meddelandet finns inte.': 'The message does not exist.',
   'Ogiltig tid.': 'Invalid time.',
+  'Ogiltig adress.': 'Invalid address.',
   'Det finns ingen nyare version.': 'There is no newer version.',
   'Uppdatering fungerar bara i den installerade appen.': 'Updating only works in the installed app.',
   'Mappen finns inte i det här kontot.': 'The folder does not exist in this account.',

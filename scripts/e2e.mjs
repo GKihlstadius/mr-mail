@@ -574,7 +574,9 @@ try {
   // HTML med blockerade bilder.
   await win.click('.row:has-text("förnyas snart")');
   await win.waitForSelector('.remote-banner');
-  check('Fjärrbilder blockeras med knapp Visa bilder', (await win.locator('.remote-banner button').textContent()) === 'Visa bilder');
+  check('Fjärrbilder blockeras med knapp Visa bilder', (await win.locator('.remote-banner button').first().textContent()) === 'Visa bilder');
+  const trustText = await win.locator('.remote-banner button.trust-sender').textContent();
+  check('Bannern erbjuder att alltid visa bilder från avsändaren', /^Visa alltid bilder från \S+@\S+$/.test(trustText ?? ''), trustText ?? '');
   const frame = win.frameLocator('.html-frame');
   const blockedImgs = await frame.locator('img[data-blocked-src]').count();
   check('Spårningspixel och logga är blockerade', blockedImgs === 2, `${blockedImgs} st`);

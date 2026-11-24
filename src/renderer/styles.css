@@ -705,14 +705,21 @@ select {
   color: var(--text-2);
   font-size: 12.5px;
 }
+.remote-banner {
+  flex-wrap: wrap;
+}
 .remote-banner span {
-  flex: 1;
+  flex: 1 1 220px;
 }
 .remote-banner button {
   color: var(--accent);
   font-weight: 600;
   padding: 3px 8px;
   border-radius: 6px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .remote-banner button:hover {
   background: var(--accent-soft);
@@ -2623,6 +2630,23 @@ body,
 }
 .activity-row + .activity-row {
   border-top: 1px solid var(--line);
+}
+.trusted-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 6px 5px 10px;
+}
+.trusted-row + .trusted-row {
+  border-top: 1px solid var(--line);
+}
+.trusted-address {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
 }
 .activity-time {
   color: var(--text-2);

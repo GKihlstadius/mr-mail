@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2
+
+- **Trusted senders:** images from the internet load right away for senders you trust. Everyone else stays blocked until you allow it.
+- The account name under each message is now plain text, without a colored dot.
+- The installer no longer puts a shortcut on the desktop. Mr Mail is in the Start menu.
+
 ## 0.7.1
 
 - Fixed: when upgrading from Brevlåda, an empty "Mr Mail" data folder could make the app start without your accounts. The app now picks the folder that actually has a database.

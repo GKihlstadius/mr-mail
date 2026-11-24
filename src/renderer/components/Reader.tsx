@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode, type MouseEvent a
 import type { AccountConfig, AiEngine, Folder, FullMessage, MessageSummary, Reminder, ReminderKind } from '../../shared/types';
 import { createSanitizer, buildFrameDocument, textToHtml } from '../../shared/sanitize';
 import { formatAddress } from '../../shared/compose';
+import { normalizeAddress } from '../../shared/trust';
 import { api } from '../api';
 import { t } from '../../shared/i18n';
 import { avatarColor, cx, formatSize, fullDate, initials, listDate, senderName } from '../util';
@@ -64,7 +65,9 @@ function MessageView({
   onMailto,
   onError,
   onToast,
-  onCollapse
+  onCollapse,
+  trustedNow,
+  onTrust
 }: {
   message: FullMessage;
   account?: AccountConfig;
@@ -73,8 +76,10 @@ function MessageView({
   onError(msg: string): void;
   onToast?(msg: string): void;
   onCollapse?(): void;
+  trustedNow: ReadonlySet<string>;
+  onTrust(address: string): void;
 }) {
-  const [allowRemote, setAllowRemote] = useState(false);
+  const [shownOnce, setShownOnce] = useState(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [frameHeight, setFrameHeight] = useState(200);
   const m = message;
@@ -82,8 +87,13 @@ function MessageView({
   // Kalenderdelen utan filnamn visas som kortet, inte som bilaga.
   const visibleAttachments = m.body.attachments.filter((a) => !a.inline && !(m.body.invite && a.contentType === 'text/calendar' && /^bilaga-\d+\.calendar$/.test(a.filename)));
 
+  // Bilder från internet: en gång på begäran, eller direkt när avsändaren är betrodd. Aldrig direkt i skräpposten.
+  const sender = normalizeAddress(m.from.address);
+  const junk = m.remoteImages?.junk ?? false;
+  const allowRemote = shownOnce || (!junk && (!!m.remoteImages?.auto || (!!sender && trustedNow.has(sender))));
+
   useEffect(() => {
-    setAllowRemote(false);
+    setShownOnce(false);
     setFrameHeight(200);
   }, [m.id]);
 
@@ -181,7 +191,12 @@ function MessageView({
         <div className="remote-banner">
           <I.Image size={15} />
           <span>{t('Bilder från internet visas inte, för att skydda dig mot spårning.')}</span>
-          <button onClick={() => setAllowRemote(true)}>{t('Visa bilder')}</button>
+          <button onClick={() => setShownOnce(true)}>{t('Visa bilder')}</button>
+          {sender && !junk && (
+            <button className="trust-sender" onClick={() => onTrust(sender)} title={t('Bilder från {address} visas direkt i fortsättningen. Ändras i Inställningar.', { address: sender })}>
+              {t('Visa alltid bilder från {address}', { address: sender })}
+            </button>
+          )}
         </div>
       )}
 
@@ -211,13 +226,17 @@ function ThreadItem({
   initiallyOpen,
   account,
   onMailto,
-  onError
+  onError,
+  trustedNow,
+  onTrust
 }: {
   summary: MessageSummary;
   initiallyOpen: boolean;
   account?: AccountConfig;
   onMailto(to: string): void;
   onError(msg: string): void;
+  trustedNow: ReadonlySet<string>;
+  onTrust(address: string): void;
 }) {
   const [open, setOpen] = useState(initiallyOpen);
   const [full, setFull] = useState<FullMessage | null>(null);
@@ -235,7 +254,7 @@ function ThreadItem({
     };
   }, [open, summary.id]);
 
-  if (open && full) return <MessageView message={full} account={account} showSubject={false} onMailto={onMailto} onError={onError} onCollapse={() => setOpen(false)} />;
+  if (open && full) return <MessageView message={full} account={account} showSubject={false} onMailto={onMailto} onError={onError} onCollapse={() => setOpen(false)} trustedNow={trustedNow} onTrust={onTrust} />;
   return (
     <button className={cx('thread-item', !summary.seen && 'unread')} onClick={() => setOpen(true)} aria-expanded={open}>
       <div className="avatar small" style={{ background: avatarColor(summary.from.address) }}>
@@ -275,11 +294,24 @@ export function Reader({
 }: Props) {
   const [moveMenu, setMoveMenu] = useState<{ id: string; accountId: string; x: number; y: number } | null>(null);
   const [pop, setPop] = useState<{ kind: 'remind' | 'print'; x: number; y: number } | null>(null);
+  // Avsändare som gjorts betrodda medan mejlet eller tråden är öppen, så att alla deras mejl i vyn får bilder direkt.
+  const [trustedNow, setTrustedNow] = useState<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
     setMoveMenu(null);
     setPop(null);
+    setTrustedNow(new Set());
   }, [message?.id]);
+
+  const trust = (address: string) => {
+    api
+      .setTrustedSender(address, true)
+      .then(() => {
+        setTrustedNow((prev) => new Set(prev).add(address));
+        onToast?.(t('Bilder från {address} visas alltid i fortsättningen.', { address }));
+      })
+      .catch((e) => onError(e.message));
+  };
 
   if (!summary && !message) {
     return (
@@ -323,7 +355,7 @@ export function Reader({
     <div className="msg-body-wrap">
       {loading && !message && <div className="body-loading">{t('Hämtar meddelandet…')}</div>}
       {error && <div className="body-error">{error}</div>}
-      {message && <MessageView message={message} account={account} showSubject={!inThread} onMailto={onMailto} onError={onError} onToast={onToast} />}
+      {message && <MessageView message={message} account={account} showSubject={!inThread} onMailto={onMailto} onError={onError} onToast={onToast} trustedNow={trustedNow} onTrust={trust} />}
     </div>
   );
 
@@ -404,7 +436,7 @@ export function Reader({
                 {body}
               </div>
             ) : (
-              <ThreadItem key={t.id} summary={t} initiallyOpen={!t.seen || t.id === newestId} account={account} onMailto={onMailto} onError={onError} />
+              <ThreadItem key={t.id} summary={t} initiallyOpen={!t.seen || t.id === newestId} account={account} onMailto={onMailto} onError={onError} trustedNow={trustedNow} onTrust={trust} />
             )
           )}
         {after}

@@ -1,7 +1,7 @@
 {
   "name": "mr-mail",
   "productName": "Mr Mail",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "A fast, private email client for Windows that your AI agents can drive.",
   "author": "GKihlstadius",
   "license": "MIT",

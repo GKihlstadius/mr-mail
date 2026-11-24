@@ -27,7 +27,8 @@ import type {
   Settings,
   SetupInput,
   SetupOutcome,
-  TestResult
+  TestResult,
+  TrustedSender
 } from '../shared/types';
 import type { SparkSignature } from '../shared/signatures';
 import type { CalendarAccountState, CalendarEvent, EventInput } from '../shared/calendar';
@@ -141,6 +142,8 @@ interface Api {
   cleanBulk(address: string, action: CleanAction, olderThanDays?: number, accountId?: string): Promise<number>;
   cleanRule(address: string, action: CleanAction | null): Promise<number>;
   cleanKeep(address: string, keep: boolean): Promise<void>;
+  trustedSenders(): Promise<TrustedSender[]>;
+  setTrustedSender(address: string, trusted: boolean): Promise<TrustedSender[]>;
   saveAccount(input: AccountInput): Promise<{ ok: boolean; errors: string[] }>;
   testAccount(input: AccountInput): Promise<TestResult>;
   setupAccount(input: SetupInput): Promise<SetupOutcome>;

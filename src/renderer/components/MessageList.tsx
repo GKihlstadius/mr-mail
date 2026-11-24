@@ -282,7 +282,6 @@ export function MessageList(p: Props) {
                 )}
                 {p.showAccount && multi && acc && (
                   <div className="row-account">
-                    <span className="acc-swatch" style={{ background: acc.color }} />
                     {acc.name}
                   </div>
                 )}

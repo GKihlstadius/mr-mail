@@ -307,5 +307,11 @@ export const settings: Record<string, string> = {
   'Ta bort regeln': 'Remove the rule',
   'Visa mejlen': 'Show emails',
   'Behåll, visa inte här': 'Keep, do not show here',
-  '{who} visas inte längre i Städa.': '{who} is no longer shown in Clean up.'
+  '{who} visas inte längre i Städa.': '{who} is no longer shown in Clean up.',
+
+  // Betrodda avsändare
+  'Betrodda avsändare': 'Trusted Senders',
+  'Bilder från internet visas direkt i mejl från de här adresserna, och från adresser du själv har skrivit till. I skräpposten visas de aldrig direkt.':
+    'Images from the internet are shown right away in emails from these addresses, and from addresses you have written to yourself. In Junk they are never shown right away.',
+  'Inga betrodda avsändare än. Lägg till en med Visa alltid bilder i ett mejl.': 'No trusted senders yet. Add one with Always Show Images in an email.'
 };

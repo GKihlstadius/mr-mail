@@ -1,5 +1,6 @@
 import type { CleanRule } from './cleanup';
 import type { IcsEvent } from './ics';
+import type { RemoteImagePolicy } from './trust';
 
 export type Security = 'ssl' | 'starttls' | 'none';
 
@@ -158,6 +159,13 @@ export type InviteResponse = 'accept' | 'tentative' | 'decline';
 
 export interface FullMessage extends MessageSummary {
   body: MessageBody;
+  // Om bilder från internet får visas direkt. Sätts när mejlet öppnas, sparas inte.
+  remoteImages?: RemoteImagePolicy;
+}
+
+export interface TrustedSender {
+  address: string;
+  added: number;
 }
 
 export type MailboxSelection =

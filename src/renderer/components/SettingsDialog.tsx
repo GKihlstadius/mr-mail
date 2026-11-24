@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { AgentLogEntry, AgentPermission, AgentPermissions, Settings, ThemeChoice } from '../../shared/types';
+import type { AgentLogEntry, AgentPermission, AgentPermissions, Settings, ThemeChoice, TrustedSender } from '../../shared/types';
 import { api, type AgentInfo, type McpClientInfo } from '../api';
 import { cx } from '../util';
 import { APP_NAME } from '../../shared/brand';
@@ -62,6 +62,7 @@ export function SettingsDialog({ settings, onEditSignatures, onClose, onSaved }:
   const [clientNote, setClientNote] = useState<{ error: boolean; text: string } | null>(null);
   const [showToken, setShowToken] = useState(false);
   const [activity, setActivity] = useState<AgentLogEntry[]>([]);
+  const [trusted, setTrusted] = useState<TrustedSender[]>([]);
 
   useEffect(() => {
     void api.oauthConfig().then((c) => setHasGoogleSecret(c.hasGoogleSecret)).catch(() => undefined);
@@ -69,6 +70,7 @@ export function SettingsDialog({ settings, onEditSignatures, onClose, onSaved }:
     void api.codexStatus().then(setCodex).catch(() => undefined);
     void api.agentInfo().then(setAgent).catch(() => undefined);
     void api.mcpClients().then(setClients).catch(() => undefined);
+    void api.trustedSenders().then(setTrusted).catch(() => undefined);
     const loadLog = () => void api.agentLog().then(setActivity).catch(() => undefined);
     loadLog();
     return api.on('agent-log', loadLog);
@@ -468,6 +470,29 @@ export function SettingsDialog({ settings, onEditSignatures, onClose, onSaved }:
               {t('Redigera signaturer…')}
             </button>
           </div>
+
+          <div className="section-title">{t('Betrodda avsändare')}</div>
+          <p className="muted small">
+            {t('Bilder från internet visas direkt i mejl från de här adresserna, och från adresser du själv har skrivit till. I skräpposten visas de aldrig direkt.')}
+          </p>
+          {trusted.length ? (
+            <div className="activity-list" id="trusted-senders">
+              {trusted.map((x) => (
+                <div className="trusted-row" key={x.address}>
+                  <span className="trusted-address">{x.address}</span>
+                  <button
+                    className="btn small"
+                    aria-label={t('Ta bort {name}', { name: x.address })}
+                    onClick={() => void api.setTrustedSender(x.address, false).then(setTrusted).catch(() => undefined)}
+                  >
+                    {t('Ta bort')}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="muted small">{t('Inga betrodda avsändare än. Lägg till en med Visa alltid bilder i ett mejl.')}</p>
+          )}
 
           <div className="section-title">{t('Allmänt')}</div>
           <div className="settings-row">

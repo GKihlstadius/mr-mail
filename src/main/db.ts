@@ -3,7 +3,8 @@ import { queryDates } from '../shared/search';
 import type { OutboxItem, Reminder, ReminderKind } from '../shared/types';
 import { categorize, type ListHeaders, type SenderStat } from '../shared/cleanup';
 import type { CalendarEvent, CalendarInfo } from '../shared/calendar';
-import type { AccountConfig, Address, AgentLogEntry, Contact, ContactDetail, ContactRow, Folder, FolderRole, MessageBody, MessageSummary, Settings, SearchQuery } from '../shared/types';
+import type { AccountConfig, Address, AgentLogEntry, Contact, ContactDetail, ContactRow, Folder, FolderRole, MessageBody, MessageSummary, Settings, SearchQuery, TrustedSender } from '../shared/types';
+import { normalizeAddress } from '../shared/trust';
 
 export const DEFAULT_SETTINGS: Settings = {
   theme: 'system',
@@ -136,6 +137,7 @@ export class Store {
       start INTEGER NOT NULL, end INTEGER NOT NULL, data TEXT NOT NULL
     )`);
     this.db.exec('CREATE INDEX IF NOT EXISTS cal_events_time ON cal_events (start, end)');
+    this.db.exec('CREATE TABLE IF NOT EXISTS trusted_senders (address TEXT PRIMARY KEY, added INTEGER NOT NULL)');
     const hasContacts = !!this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'contacts'").get();
     if (!hasContacts) {
       this.db.exec(`CREATE TABLE contacts (
@@ -956,6 +958,24 @@ export class Store {
   inviteAnswer(accountId: string, uid: string): { response: string; sequence: number; at: number } | null {
     const r = this.db.prepare('SELECT response, sequence, at FROM invite_answers WHERE account_id = ? AND uid = ?').get(accountId, uid) as any;
     return r ? { response: r.response, sequence: r.sequence, at: r.at } : null;
+  }
+
+  // Betrodda avsändare: bilder från internet visas direkt. Adressen sparas med små bokstäver.
+  trustedSenders(): TrustedSender[] {
+    return this.db.prepare('SELECT address, added FROM trusted_senders ORDER BY address').all() as unknown as TrustedSender[];
+  }
+
+  isTrustedSender(address: string): boolean {
+    const addr = normalizeAddress(address);
+    return !!addr && !!this.db.prepare('SELECT 1 FROM trusted_senders WHERE address = ?').get(addr);
+  }
+
+  setTrustedSender(address: string, trusted: boolean, at = Date.now()): boolean {
+    const addr = normalizeAddress(address);
+    if (!addr) return false;
+    if (trusted) this.db.prepare('INSERT INTO trusted_senders (address, added) VALUES (?, ?) ON CONFLICT(address) DO NOTHING').run(addr, at);
+    else this.db.prepare('DELETE FROM trusted_senders WHERE address = ?').run(addr);
+    return true;
   }
 
   getSettings(): Settings {
