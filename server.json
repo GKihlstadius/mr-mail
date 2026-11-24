@@ -3,7 +3,7 @@
   "name": "io.github.GKihlstadius/mr-mail",
   "title": "Mr Mail",
   "description": "Local Windows email client with 28 tools: read, draft, send on request, calendar and clean up.",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "websiteUrl": "https://github.com/GKihlstadius/mr-mail",
   "repository": {
     "url": "https://github.com/GKihlstadius/mr-mail",
@@ -12,9 +12,9 @@
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/GKihlstadius/mr-mail/releases/download/v0.7.1/MrMail-0.7.1.mcpb",
-      "version": "0.7.1",
-      "fileSha256": "273408a809978161427a6dbd4c11aaa2037d3eb3048da93578248a690cac12ae",
+      "identifier": "https://github.com/GKihlstadius/mr-mail/releases/download/v0.7.2/MrMail-0.7.2.mcpb",
+      "version": "0.7.2",
+      "fileSha256": "5a495b70b325b653d44c32ad8f368fb4e85b1c3e51569442e3b0badb40ff4513",
       "transport": {
         "type": "stdio"
       }

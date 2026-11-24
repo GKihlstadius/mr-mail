@@ -1,12 +1,12 @@
 {
-    "version": "0.7.1",
+    "version": "0.7.2",
     "description": "A fast, private email client for Windows that your AI agents can drive.",
     "homepage": "https://github.com/GKihlstadius/mr-mail",
     "license": "MIT",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/GKihlstadius/mr-mail/releases/download/v0.7.1/MrMail-Setup-0.7.1.exe#/dl.7z",
-            "hash": "9a21ad90b8d966f5b7351d66ae2e69e18ca5c15b1f9a6bafd19d310c6a95aab1"
+            "url": "https://github.com/GKihlstadius/mr-mail/releases/download/v0.7.2/MrMail-Setup-0.7.2.exe#/dl.7z",
+            "hash": "1a000afc86b0e658db5c9cfb69aa3e1999f3dd2257ad868de05807ec16a87d37"
         }
     },
     "installer": {
